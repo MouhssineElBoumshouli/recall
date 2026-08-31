@@ -9,6 +9,7 @@ import {
   GeminiLiveTranscription,
   type GeminiLiveConnection,
   type GeminiLiveConnectionCallbacks,
+  type GeminiLiveDiagnosticEvent,
   type LiveTranscriptEvent,
 } from './geminiLiveTranscription';
 import {
@@ -53,11 +54,14 @@ export interface LiveTranscriptionSessionManagerOptions {
   rotationThresholdMs?: number;
   reconnectDelaysMs?: number[];
   maxBufferedChunks?: number;
+  finalizationTimeoutMs?: number;
   onStateChange?: (state: ConnectionState) => void;
+  onDebugInfo?: (debug: RecordingDebugInfo) => void;
   onTranscript?: (event: ManagedTranscriptEvent) => void;
 }
 
 const DEFAULT_RECONNECT_DELAYS_MS = [2_000, 5_000, 10_000, 20_000];
+const DEFAULT_FINALIZATION_TIMEOUT_MS = 2_000;
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Unknown Gemini Live error';
@@ -76,7 +80,11 @@ export class LiveTranscriptionSessionManager {
 
   private readonly maxBufferedChunks: number;
 
+  private readonly finalizationTimeoutMs: number;
+
   private readonly onStateChange?: (state: ConnectionState) => void;
+
+  private readonly onDebugInfo?: (debug: RecordingDebugInfo) => void;
 
   private readonly onTranscript?: (event: ManagedTranscriptEvent) => void;
 
@@ -106,6 +114,26 @@ export class LiveTranscriptionSessionManager {
 
   private droppedAudioChunks = 0;
 
+  private socketOpened = false;
+
+  private setupComplete = false;
+
+  private audioChunksSent = 0;
+
+  private serverMessagesReceived = 0;
+
+  private interimTranscriptEvents = 0;
+
+  private finalTranscriptEvents = 0;
+
+  private turnCompleteReceived = false;
+
+  private audioStreamEndSent = false;
+
+  private lastCloseCode: number | null = null;
+
+  private lastCloseReason: string | null = null;
+
   private lastError: string | null = null;
 
   public constructor(options: LiveTranscriptionSessionManagerOptions) {
@@ -117,7 +145,9 @@ export class LiveTranscriptionSessionManager {
     this.rotationThresholdMs = options.rotationThresholdMs || GEMINI_ROTATION_THRESHOLD_MS;
     this.reconnectDelaysMs = options.reconnectDelaysMs || DEFAULT_RECONNECT_DELAYS_MS;
     this.maxBufferedChunks = options.maxBufferedChunks || 50;
+    this.finalizationTimeoutMs = options.finalizationTimeoutMs ?? DEFAULT_FINALIZATION_TIMEOUT_MS;
     this.onStateChange = options.onStateChange;
+    this.onDebugInfo = options.onDebugInfo;
     this.onTranscript = options.onTranscript;
   }
 
@@ -133,6 +163,16 @@ export class LiveTranscriptionSessionManager {
     this.reconnectAttempt = 0;
     this.rotationCount = 0;
     this.droppedAudioChunks = 0;
+    this.socketOpened = false;
+    this.setupComplete = false;
+    this.audioChunksSent = 0;
+    this.serverMessagesReceived = 0;
+    this.interimTranscriptEvents = 0;
+    this.finalTranscriptEvents = 0;
+    this.turnCompleteReceived = false;
+    this.audioStreamEndSent = false;
+    this.lastCloseCode = null;
+    this.lastCloseReason = null;
     this.lastError = null;
     this.pendingChunks = [];
     this.setState(transitionConnectionState(this.state, { type: 'start' }));
@@ -149,6 +189,7 @@ export class LiveTranscriptionSessionManager {
         this.activeConnection.connection.sendAudio(audioBase64);
       } catch (error) {
         this.lastError = getErrorMessage(error);
+        this.emitDebugInfo();
         const lostConnection = this.activeConnection;
         this.activeConnection = null;
         this.setState(transitionConnectionState(this.state, { type: 'connectionLost' }));
@@ -183,16 +224,26 @@ export class LiveTranscriptionSessionManager {
     const connection = this.activeConnection;
     this.activeConnection = null;
     if (connection) {
+      let audioStreamEnded = false;
       try {
-        connection.connection.endAudio();
+        audioStreamEnded = connection.connection.endAudio();
       } catch (error) {
         this.lastError = getErrorMessage(error);
+        this.emitDebugInfo();
       }
-      await this.wait(350);
+      if (audioStreamEnded) {
+        try {
+          await connection.connection.waitForTurnComplete(this.finalizationTimeoutMs);
+        } catch (error) {
+          this.lastError = getErrorMessage(error);
+          this.emitDebugInfo();
+        }
+      }
       try {
         connection.connection.close();
       } catch (error) {
         this.lastError = getErrorMessage(error);
+        this.emitDebugInfo();
       }
     }
 
@@ -208,6 +259,16 @@ export class LiveTranscriptionSessionManager {
       reconnectAttempts: this.reconnectAttempt,
       bufferedAudioChunks: this.pendingChunks.length,
       droppedAudioChunks: this.droppedAudioChunks,
+      socketOpened: this.socketOpened,
+      setupComplete: this.setupComplete,
+      audioChunksSent: this.audioChunksSent,
+      serverMessagesReceived: this.serverMessagesReceived,
+      interimTranscriptEvents: this.interimTranscriptEvents,
+      finalTranscriptEvents: this.finalTranscriptEvents,
+      turnCompleteReceived: this.turnCompleteReceived,
+      audioStreamEndSent: this.audioStreamEndSent,
+      lastCloseCode: this.lastCloseCode,
+      lastCloseReason: this.lastCloseReason,
       lastError: this.lastError,
     };
   }
@@ -237,10 +298,12 @@ export class LiveTranscriptionSessionManager {
       const connectionStartedAtOverallMs = this.currentElapsedMs();
       const callbacks: GeminiLiveConnectionCallbacks = {
         onOpen: () => undefined,
+        onDiagnostic: (event) => this.handleDiagnostic(event),
         onTranscript: (event) =>
           this.handleTranscript(event, connectionId, generation, connectionStartedAtOverallMs),
         onError: (error) => {
           this.lastError = getErrorMessage(error);
+          this.emitDebugInfo();
         },
         onClose: (reason) => this.handleClose(connectionId, reason),
       };
@@ -278,6 +341,9 @@ export class LiveTranscriptionSessionManager {
         void this.retireConnection(previousConnection);
       }
     } catch (error) {
+      if (!this.running) {
+        return;
+      }
       this.lastError = getErrorMessage(error);
       if (this.activeConnection) {
         this.setState('connected');
@@ -326,6 +392,7 @@ export class LiveTranscriptionSessionManager {
     }
 
     this.lastError = reason;
+    this.emitDebugInfo();
     this.activeConnection = null;
     this.setState(transitionConnectionState(this.state, { type: 'connectionLost' }));
     this.scheduleRetry(false);
@@ -378,16 +445,26 @@ export class LiveTranscriptionSessionManager {
   }
 
   private async retireConnection(connection: ManagedConnection): Promise<void> {
+    let audioStreamEnded = false;
     try {
-      connection.connection.endAudio();
+      audioStreamEnded = connection.connection.endAudio();
     } catch (error) {
       this.lastError = getErrorMessage(error);
+      this.emitDebugInfo();
     }
-    await this.wait(250);
+    if (audioStreamEnded) {
+      try {
+        await connection.connection.waitForTurnComplete(this.finalizationTimeoutMs);
+      } catch (error) {
+        this.lastError = getErrorMessage(error);
+        this.emitDebugInfo();
+      }
+    }
     try {
       connection.connection.close();
     } catch (error) {
       this.lastError = getErrorMessage(error);
+      this.emitDebugInfo();
     }
   }
 
@@ -398,6 +475,45 @@ export class LiveTranscriptionSessionManager {
   private setState(nextState: ConnectionState): void {
     this.state = nextState;
     this.onStateChange?.(nextState);
+    this.emitDebugInfo();
+  }
+
+  private handleDiagnostic(event: GeminiLiveDiagnosticEvent): void {
+    switch (event.type) {
+      case 'socketOpened':
+        this.socketOpened = true;
+        break;
+      case 'setupComplete':
+        this.setupComplete = true;
+        break;
+      case 'serverMessageReceived':
+        this.serverMessagesReceived += 1;
+        break;
+      case 'audioChunkSent':
+        this.audioChunksSent += 1;
+        break;
+      case 'interimTranscript':
+        this.interimTranscriptEvents += 1;
+        break;
+      case 'finalTranscript':
+        this.finalTranscriptEvents += 1;
+        break;
+      case 'turnComplete':
+        this.turnCompleteReceived = true;
+        break;
+      case 'audioStreamEndSent':
+        this.audioStreamEndSent = true;
+        break;
+      case 'socketClosed':
+        this.lastCloseCode = event.code;
+        this.lastCloseReason = event.reason || null;
+        break;
+    }
+    this.emitDebugInfo();
+  }
+
+  private emitDebugInfo(): void {
+    this.onDebugInfo?.(this.getDebugInfo());
   }
 
   private clearTimers(): void {
@@ -411,7 +527,4 @@ export class LiveTranscriptionSessionManager {
     }
   }
 
-  private wait(durationMs: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, durationMs));
-  }
 }

@@ -82,6 +82,16 @@ const initialDebug: RecordingDebugInfo = {
   reconnectAttempts: 0,
   bufferedAudioChunks: 0,
   droppedAudioChunks: 0,
+  socketOpened: false,
+  setupComplete: false,
+  audioChunksSent: 0,
+  serverMessagesReceived: 0,
+  interimTranscriptEvents: 0,
+  finalTranscriptEvents: 0,
+  turnCompleteReceived: false,
+  audioStreamEndSent: false,
+  lastCloseCode: null,
+  lastCloseReason: null,
   lastError: null,
 };
 
@@ -113,8 +123,8 @@ export function useRecordingSession() {
         tokenProvider: new GeminiTokenClient(tokenServerUrl),
         onStateChange: (state) => {
           setConnectionState(state);
-          setDebug((current) => ({ ...current, connectionState: state }));
         },
+        onDebugInfo: setDebug,
         onTranscript: (event: ManagedTranscriptEvent) => {
           let snapshot;
 

@@ -1,6 +1,6 @@
 # Recall — Phase 0 project status
 
-Status date: 2026-08-31
+Status date: 2026-09-01
 
 ## Completed work
 
@@ -60,9 +60,9 @@ Passed in the current workspace:
 
 - `npm run typecheck`
 - `npm run server:check`
-- `npm test` — 6 files, 12 tests
+- `npm test` — 6 files, 19 tests
 - `npm run lint`
-- `npx expo-doctor` — 18/18 checks
+- `npx expo-doctor` — 17/18 checks; the remaining warning is that the intentionally committed native project contains app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
 - `npx expo prebuild --no-install` — Android native project generated
 - Generated Android manifest contains `android.permission.RECORD_AUDIO`.
 
@@ -82,11 +82,13 @@ Runtime verification update — physical Android device:
 
 - The real Android SDK was configured for the verification shell at `C:\Users\Mouhssine\AppData\Local\Android\Sdk`, including `platform-tools`, `emulator`, and command-line tools.
 - `adb devices -l` shows the authorized physical device `SM_X516B` with state `device`.
-- The active LAN IPv4 address was used to configure the non-secret `EXPO_PUBLIC_TOKEN_SERVER_URL` in the project `.env`; the machine-specific value is intentionally not committed. The project-local `.env` still does not contain a `GEMINI_API_KEY` assignment, so the token server cannot start until the key is supplied locally.
+- The active LAN IPv4 address was used to configure the non-secret `EXPO_PUBLIC_TOKEN_SERVER_URL` in the project `.env`; the machine-specific value and local Gemini credential are intentionally not committed or documented.
 - The incomplete Android NDK/API 36 SDK installation was repaired using the official command-line tools. The incomplete NDK directory was moved to `runtime-recovery` as a recoverable local backup; no application code or dependency versions were changed.
 - Gradle completed successfully with Java 17 and a short temporary directory (`C:\tmp`) in the verification shell. Expo installed the debug development build and opened Recall on `SM_X516B`; Metro bundled the application successfully.
 - Test A — PASSED on the physical device. Microphone permission was granted, recording ran for `00:10`, one bookmark was created, stopping produced the local URI `file:/data/user/0/com.mouhssineee.recall/files/4f244962-71b0-474b-939d-7d0c8e4d3208.wav`, and the stopped screen reported 43 live-transcription chunks dropped while unavailable. `adb` verified the file exists and is 321,964 bytes. The first 44 bytes are a consistent RIFF/WAVE PCM header: mono, 16,000 Hz, 16-bit, with matching data length. This validates local recording independently of Gemini.
-- Tests B–F have not yet been run. Gemini testing remains blocked until the token server can start with the locally supplied key.
+- Test B — FAILED on the physical device before this protocol hardening pass. Local recording ran for approximately seven seconds with generation 1, zero reconnect attempts, zero dropped chunks, and zero finalized transcript segments. The failure was consistent with the client treating WebSocket `onopen` as Gemini readiness, allowing the manager to send audio before the server's `setupComplete` response. The prior parser could also discard a final transcription when the same message contained both interim and final fields, and shutdown used a fixed 350 ms sleep rather than a protocol completion signal.
+- Gemini Live protocol hardening is now implemented: the connection resolves only after `setupComplete`, audio is gated until setup, current camelCase interim/final fields are emitted independently, and stop/rotation send `audioStreamEnd` then wait for `turnComplete` with a bounded timeout and a short late-final drain.
+- Tests C–F have not yet been run. Full physical-device retesting remains pending after the development build reload.
 
 Version control:
 
@@ -116,11 +118,10 @@ Not yet validated here:
 
 ## Exact next steps
 
-1. Set `GEMINI_API_KEY` in a local `.env`, start the token server, and verify `/health` and `/token`.
-2. Upgrade Node to a supported 22.x patch if native build tooling reports engine problems.
-3. Build the Android development client with `npx expo prebuild` and `npx expo run:android`; configure `EXPO_PUBLIC_TOKEN_SERVER_URL` to `http://10.0.2.2:8787` for the Android emulator or the computer's LAN IP for a physical device.
-4. Verify the full Android flow: permission granted, permission denied, start/stop, local URI, bookmark timing, interim/final transcript, server offline, reconnect, and app cleanup.
-5. On macOS, build and verify the equivalent iOS development client and permission flow.
-6. Add deterministic integration seams for forced connection failure and shortened rotation tests on device builds, without adding a fake microphone end-to-end test.
-7. Harden the token server boundary (authentication, rate limiting, HTTPS, origin policy, and deployment) before any shared or production use.
-8. Only after the capture/transcription spike is reliable, add local session persistence and playback as the next product milestone.
+1. Reload the existing Android development build and repeat Test B against the hardened Gemini Live handshake.
+2. If Test B passes, verify Tests C–F on the physical device, including the non-destructive transcription-unavailable case.
+3. Upgrade Node to a supported 22.x patch if native build tooling reports engine problems.
+4. On macOS, build and verify the equivalent iOS development client and permission flow.
+5. Add deterministic integration seams for forced connection failure and shortened rotation tests on device builds, without adding a fake microphone end-to-end test.
+6. Harden the token server boundary (authentication, rate limiting, HTTPS, origin policy, and deployment) before any shared or production use.
+7. Only after the capture/transcription spike is reliable, add local session persistence and playback as the next product milestone.

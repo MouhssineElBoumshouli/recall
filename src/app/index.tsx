@@ -273,6 +273,21 @@ function StoppedScreen({
         <Text style={styles.debugText}>
           {debug.reconnectAttempts} reconnect attempts · {debug.droppedAudioChunks} audio chunks dropped while unavailable
         </Text>
+        <Text style={styles.debugText}>
+          {debug.socketOpened ? 'socket opened' : 'socket not opened'} ·{' '}
+          {debug.setupComplete ? 'setup complete' : 'setup pending'} · {debug.audioChunksSent} audio chunks sent ·{' '}
+          {debug.serverMessagesReceived} server messages
+        </Text>
+        <Text style={styles.debugText}>
+          {debug.interimTranscriptEvents} interim · {debug.finalTranscriptEvents} final ·{' '}
+          {debug.turnCompleteReceived ? 'turn complete received' : 'turn incomplete'} ·{' '}
+          {debug.audioStreamEndSent ? 'audio end sent' : 'audio end not sent'}
+        </Text>
+        {debug.lastCloseCode !== null && (
+          <Text style={styles.debugText}>
+            Last close: {debug.lastCloseCode} {debug.lastCloseReason || 'no reason'}
+          </Text>
+        )}
         {debug.lastError && <Text style={styles.errorText}>Last live error: {debug.lastError}</Text>}
         {error && <Text style={styles.errorText}>Recording finalization: {error}</Text>}
       </View>

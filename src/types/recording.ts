@@ -12,6 +12,16 @@ export interface RecordingDebugInfo {
   reconnectAttempts: number;
   bufferedAudioChunks: number;
   droppedAudioChunks: number;
+  socketOpened: boolean;
+  setupComplete: boolean;
+  audioChunksSent: number;
+  serverMessagesReceived: number;
+  interimTranscriptEvents: number;
+  finalTranscriptEvents: number;
+  turnCompleteReceived: boolean;
+  audioStreamEndSent: boolean;
+  lastCloseCode: number | null;
+  lastCloseReason: string | null;
   lastError: string | null;
 }
 
