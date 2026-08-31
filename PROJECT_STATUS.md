@@ -70,7 +70,7 @@ Runtime verification attempted on Windows:
 
 - Node `v22.12.0` and npm `10.9.0` are active from `C:\Program Files\nodejs`.
 - NVM for Windows is not installed. The official Node download page currently lists Node `v24.20.0` as the latest LTS and Node `v22.23.2` as an LTS maintenance line.
-- `.env` exists but is empty (0 bytes). No `GEMINI_API_KEY`, `TOKEN_SERVER_PORT`, or `EXPO_PUBLIC_TOKEN_SERVER_URL` assignment is present. No credential value was printed.
+- At the initial environment check, the project `.env` was empty (0 bytes). No `GEMINI_API_KEY`, `TOKEN_SERVER_PORT`, or `EXPO_PUBLIC_TOKEN_SERVER_URL` assignment was present at that time. No credential value was printed.
 - `npm run server` correctly exits with `GEMINI_API_KEY is required`; no token server listener is running, so a positive `/token` check is pending a real key.
 - Dependencies are installed, including `@siteed/audio-studio@3.2.1`, `@google/genai@2.19.0`, and the Expo SDK 57 dependency set.
 - The Android SDK exists at `C:\Users\Mouhssine\AppData\Local\Android\Sdk`, but the current `ANDROID_HOME` points to a nonexistent SYSTEM profile path. The SDK's `adb` is available by absolute path and reports version 36.0.0.
@@ -82,11 +82,16 @@ Runtime verification update — physical Android device:
 
 - The real Android SDK was configured for the verification shell at `C:\Users\Mouhssine\AppData\Local\Android\Sdk`, including `platform-tools`, `emulator`, and command-line tools.
 - `adb devices -l` shows the authorized physical device `SM_X516B` with state `device`.
-- The active LAN IPv4 address is `192.168.100.10`; project `.env` contains the non-secret `EXPO_PUBLIC_TOKEN_SERVER_URL` pointing to port 8787. The project-local `.env` still does not contain a `GEMINI_API_KEY` assignment, so the token server cannot start until the key is supplied locally.
+- The active LAN IPv4 address was used to configure the non-secret `EXPO_PUBLIC_TOKEN_SERVER_URL` in the project `.env`; the machine-specific value is intentionally not committed. The project-local `.env` still does not contain a `GEMINI_API_KEY` assignment, so the token server cannot start until the key is supplied locally.
 - The incomplete Android NDK/API 36 SDK installation was repaired using the official command-line tools. The incomplete NDK directory was moved to `runtime-recovery` as a recoverable local backup; no application code or dependency versions were changed.
 - Gradle completed successfully with Java 17 and a short temporary directory (`C:\tmp`) in the verification shell. Expo installed the debug development build and opened Recall on `SM_X516B`; Metro bundled the application successfully.
 - Test A — PASSED on the physical device. Microphone permission was granted, recording ran for `00:10`, one bookmark was created, stopping produced the local URI `file:/data/user/0/com.mouhssineee.recall/files/4f244962-71b0-474b-939d-7d0c8e4d3208.wav`, and the stopped screen reported 43 live-transcription chunks dropped while unavailable. `adb` verified the file exists and is 321,964 bytes. The first 44 bytes are a consistent RIFF/WAVE PCM header: mono, 16,000 Hz, 16-bit, with matching data length. This validates local recording independently of Gemini.
 - Tests B–F have not yet been run. Gemini testing remains blocked until the token server can start with the locally supplied key.
+
+Version control:
+
+- Recall has its own Git repository at the project root on `main`; it is separate from the unrelated parent repository under `C:\Users\Mouhssine`.
+- The public remote is `https://github.com/MouhssineElBoumshouli/recall.git`. The first milestone commit contains the Phase 0 source, documentation, tests, and reproducible Android native project while excluding local credentials, recordings, dependencies, and build output.
 
 Not yet validated here:
 
