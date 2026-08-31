@@ -1,0 +1,67 @@
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# local tooling and recovery artifacts
+.claude/
+.vscode/
+runtime-recovery/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Android native build output and machine-local configuration
+/android/.gradle/
+/android/**/build/
+/android/**/.cxx/
+/android/local.properties
+*.apk
+*.aab
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+*.log
+
+# local recordings and data
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.db
+*.sqlite
+*.sqlite3
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+example
+
+# generated iOS folder
+/ios
