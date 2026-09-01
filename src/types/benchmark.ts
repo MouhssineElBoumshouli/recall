@@ -6,6 +6,12 @@ export type BenchmarkBackendId =
 
 export type BenchmarkResultStatus = 'pending' | 'running' | 'succeeded' | 'failed';
 
+export interface BenchmarkDiagnostic {
+  stage: 'before request' | 'during interactions.create' | 'while reading output';
+  code: string | null;
+  status: number | null;
+}
+
 export interface BenchmarkBackendResult {
   id: BenchmarkBackendId;
   label: string;
@@ -15,6 +21,7 @@ export interface BenchmarkBackendResult {
   text: string | null;
   error: string | null;
   processingMs: number | null;
+  diagnostic?: BenchmarkDiagnostic | null;
 }
 
 export type BenchmarkResults = Partial<Record<BenchmarkBackendId, BenchmarkBackendResult>>;

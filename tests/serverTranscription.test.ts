@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createGeminiTranscriptionGateway,
+  GeminiInteractionError,
   RefinementServiceError,
   transcribeWavFile,
   type GeminiTranscriptionGateway,
@@ -149,10 +150,54 @@ describe('transcribeWavFile', () => {
     expect(create).toHaveBeenCalledWith({
       model: 'gemini-3.7-flash',
       input: [
-        { type: 'audio', uri: 'https://files.example/audio', mime_type: 'audio/wav' },
         { type: 'text', text: 'transcribe exactly' },
+        { type: 'audio', uri: 'https://files.example/audio', mime_type: 'audio/wav' },
       ],
     });
+  });
+
+  it('preserves safe diagnostics for an audio-understanding provider failure', async () => {
+    const providerError = Object.assign(
+      new Error('429 quota exceeded at https://generativelanguage.googleapis.com/v1beta/interactions?key=secret'),
+      { status: 429, code: 'too_many_requests' },
+    );
+    const create = vi.fn().mockRejectedValue(providerError);
+    const ai = {
+      files: { upload: vi.fn(), delete: vi.fn() },
+      interactions: { create },
+    } as unknown as GoogleGenAI;
+    const gateway = createGeminiTranscriptionGateway(ai);
+
+    await expect(gateway.understand('https://files.example/audio', 'audio/wav', 'transcribe exactly'))
+      .rejects.toMatchObject({
+        name: 'GeminiInteractionError',
+        diagnostic: {
+          model: 'gemini-3.7-flash',
+          stage: 'during interactions.create',
+          code: 'too_many_requests',
+          status: 429,
+          message: expect.not.stringContaining('secret'),
+        },
+      });
+    await expect(gateway.understand('https://files.example/audio', 'audio/wav', 'transcribe exactly'))
+      .rejects.toBeInstanceOf(GeminiInteractionError);
+  });
+
+  it('reports output-reading failures with a separate stage', async () => {
+    const response = {} as { output_text?: string };
+    Object.defineProperty(response, 'output_text', {
+      get: () => {
+        throw new Error('output accessor failed');
+      },
+    });
+    const ai = {
+      files: { upload: vi.fn(), delete: vi.fn() },
+      interactions: { create: vi.fn().mockResolvedValue(response) },
+    } as unknown as GoogleGenAI;
+    const gateway = createGeminiTranscriptionGateway(ai);
+
+    await expect(gateway.understand('https://files.example/audio', 'audio/wav', 'transcribe exactly'))
+      .rejects.toMatchObject({ diagnostic: { stage: 'while reading output' } });
   });
 
   it('uploads, transcribes, and deletes the temporary Gemini file', async () => {

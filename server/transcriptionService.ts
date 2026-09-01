@@ -1,5 +1,28 @@
 import type { GoogleGenAI } from '@google/genai';
 
+export type GeminiInteractionStage =
+  | 'before request'
+  | 'during interactions.create'
+  | 'while reading output';
+
+export interface GeminiInteractionDiagnostic {
+  model: string;
+  stage: GeminiInteractionStage;
+  code: string | null;
+  status: number | null;
+  message: string;
+}
+
+export class GeminiInteractionError extends Error {
+  readonly diagnostic: GeminiInteractionDiagnostic;
+
+  constructor(diagnostic: GeminiInteractionDiagnostic) {
+    super('Gemini audio-understanding request failed.');
+    this.name = 'GeminiInteractionError';
+    this.diagnostic = diagnostic;
+  }
+}
+
 export const NON_LIVE_TRANSCRIPTION_MODEL = 'gemini-3.5-transcribe';
 export const GEMINI_AUDIO_UNDERSTANDING_MODEL = 'gemini-3.7-flash';
 export const WAV_MIME_TYPE = 'audio/wav';
@@ -59,6 +82,44 @@ function cleanVocabulary(vocabulary: string[] | undefined): string[] {
     .slice(0, 1_000);
 }
 
+function redactProviderMessage(value: unknown): string {
+  const message = String(value ?? 'Unknown Gemini error')
+    .replace(/(?:https?|gs):\/\/\S+/gi, '[redacted-uri]')
+    .replace(/(?:access_token|api_key|key|token)=([^\s&]+)/gi, (match) => `${match.split('=')[0]}=[redacted]`)
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]');
+  return message.length > 400 ? `${message.slice(0, 397)}...` : message;
+}
+
+function readStatus(error: Record<string, unknown>): number | null {
+  const direct = error.status;
+  if (typeof direct === 'number') {
+    return direct;
+  }
+
+  const response = error.response;
+  if (response && typeof response === 'object' && typeof (response as Record<string, unknown>).status === 'number') {
+    return (response as Record<string, unknown>).status as number;
+  }
+
+  return null;
+}
+
+export function createGeminiInteractionDiagnostic(
+  error: unknown,
+  model: string,
+  stage: GeminiInteractionStage,
+): GeminiInteractionDiagnostic {
+  const candidate = error && typeof error === 'object' ? error as Record<string, unknown> : {};
+  const code = candidate.code;
+  return {
+    model,
+    stage,
+    code: typeof code === 'string' || typeof code === 'number' ? String(code) : null,
+    status: readStatus(candidate),
+    message: redactProviderMessage(candidate.message ?? error),
+  };
+}
+
 export function createGeminiTranscriptionGateway(ai: GoogleGenAI): GeminiTranscriptionGateway {
   return {
     async upload(filePath, mimeType) {
@@ -84,15 +145,46 @@ export function createGeminiTranscriptionGateway(ai: GoogleGenAI): GeminiTranscr
     },
 
     async understand(fileUri, mimeType, instruction) {
-      const interaction = await ai.interactions.create({
-        model: GEMINI_AUDIO_UNDERSTANDING_MODEL,
-        input: [
-          { type: 'audio', uri: fileUri, mime_type: mimeType },
-          { type: 'text', text: instruction },
-        ],
-      });
+      if (!fileUri || !mimeType || !instruction) {
+        throw new GeminiInteractionError(
+          createGeminiInteractionDiagnostic(
+            new Error('Audio understanding request is missing required input.'),
+            GEMINI_AUDIO_UNDERSTANDING_MODEL,
+            'before request',
+          ),
+        );
+      }
 
-      return interaction.output_text ?? '';
+      let interaction: { output_text?: string };
+      try {
+        interaction = await ai.interactions.create({
+          model: GEMINI_AUDIO_UNDERSTANDING_MODEL,
+          input: [
+            { type: 'text', text: instruction },
+            { type: 'audio', uri: fileUri, mime_type: mimeType },
+          ],
+        });
+      } catch (error) {
+        throw new GeminiInteractionError(
+          createGeminiInteractionDiagnostic(
+            error,
+            GEMINI_AUDIO_UNDERSTANDING_MODEL,
+            'during interactions.create',
+          ),
+        );
+      }
+
+      try {
+        return interaction.output_text ?? '';
+      } catch (error) {
+        throw new GeminiInteractionError(
+          createGeminiInteractionDiagnostic(
+            error,
+            GEMINI_AUDIO_UNDERSTANDING_MODEL,
+            'while reading output',
+          ),
+        );
+      }
     },
 
     async delete(fileName) {

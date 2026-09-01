@@ -171,6 +171,12 @@ function BenchmarkOutput({ result }: { result: BenchmarkBackendResult }) {
       {result.status === 'failed' && (
         <View style={styles.refinementError}>
           <Text style={styles.errorText}>{result.error || 'Backend failed.'}</Text>
+          {result.diagnostic && (
+            <Text style={styles.debugText}>
+              {result.diagnostic.code || 'provider error'} · {result.diagnostic.stage}
+              {result.diagnostic.status !== null ? ` · HTTP ${result.diagnostic.status}` : ''}
+            </Text>
+          )}
           {result.processingMs !== null && (
             <Text style={styles.debugText}>{result.processingMs} ms</Text>
           )}

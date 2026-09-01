@@ -22,6 +22,7 @@ function createResult(
     text: null,
     error,
     processingMs: null,
+    diagnostic: null,
   };
 }
 

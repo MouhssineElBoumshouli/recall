@@ -104,7 +104,7 @@ Passed in the current workspace:
 
 - `npm run typecheck`
 - `npm run server:check`
-- `npm test` — 13 files, 58 tests
+- `npm test` — 13 files, 61 tests
 - `npm run lint`
 - `npx expo-doctor` — 17/18 checks; the remaining warning is that the intentionally committed native project contains app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
 - `npx expo prebuild --no-install` — Android native project generated
@@ -113,7 +113,7 @@ Passed in the current workspace:
 - Phase 0 physical result — Test C French passed.
 - Phase 0 physical result — Test D English/French code-switching passed.
 - Phase 0 physical result — Darija/French/English code-switching was partially successful and inconsistent: Darija sometimes omitted words or changed script, while English/French/Spanish switching was substantially more reliable.
-- Phase 0.5/0.6 static result — `npm run typecheck`, `npm run server:check`, `npm test` (13 files, 58 tests), and `npm run lint` passed. `npx expo-doctor` reports 17/18 checks passed; its existing warning is the committed native project containing app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
+- Phase 0.5/0.6 static result — `npm run typecheck`, `npm run server:check`, `npm test` (13 files, 61 tests), and `npm run lint` passed. `npx expo-doctor` reports 17/18 checks passed; its existing warning is the committed native project containing app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
 
 Runtime verification attempted on Windows:
 
@@ -152,6 +152,10 @@ Runtime verification update — physical Android device:
 - The existing Android development build was reloaded through Metro after the transport fix. No native rebuild or dependency/configuration change was required. `adb reverse` remains configured for ports 8081 and 8787. No new physical recording has been performed after the fix; the next recording should capture the server's non-sensitive Content-Type diagnostic.
 - Phase 0.6 backend benchmark implementation is complete in the workspace. No Phase 0.6 physical A/B/C recording has been performed by the coding session.
 - Current documented model/configuration findings: Gemini 3.5 Transcribe remains automatic-detection/verbatim for A; Cloud Chirp 3 B is explicitly `ar-MA`; Gemini audio understanding C is `gemini-3.7-flash` with the strict raw-transcription instruction. Gemini API credentials remain server-only; Cloud ADC remains server-only.
+- Phase 0.6 physical sanity test — LIVE succeeded; A (`gemini-3.5-transcribe`) succeeded in approximately 2.9 seconds; B (Chirp 3 `ar-MA`) failed as intentionally expected because Google Cloud is not configured; C (`gemini-3.7-flash`) failed after approximately 33 seconds with only the prior generic UI error.
+- Phase 0.6 C control matrix — using the latest saved valid mono 16 kHz PCM16 WAV (250,284 bytes) and installed `@google/genai` 2.19.0, C0 text-only, C1 File URI with the official text-first request, C2 with the existing Darija prompt, and C3 inline base64 audio were all rejected by Google with HTTP 429 quota errors for `generate_content_free_tier_requests` on `gemini-3.7-flash`. The one permitted raw REST C1 comparison returned the same HTTP 429 with provider code `too_many_requests`. C4 sequential/parallel comparison was blocked because C1 did not succeed.
+- The control matrix therefore identifies an account/model quota blocker, not an audio-format, File URI, text/audio ordering, shared-file concurrency, or React Native issue. The installed SDK's default Interactions API version is `v1beta`, matching the current official audio-understanding examples; no SDK upgrade or API-version change was justified. Recall C now matches the official text-first/audio-second order.
+- Backend C now preserves non-secret diagnostics for model, stage, provider code, and HTTP status in server logs and exposes only compact stage/code/status metadata to the temporary benchmark UI. Provider messages redact URIs, bearer values, and query credentials; API keys, tokens, audio, and transcript output are never logged.
 
 Version control:
 
@@ -178,13 +182,14 @@ Not yet validated here:
 - The current UI is a Phase 0 validation surface, not the final Recall navigation or accessibility pass.
 - Phase 0.5 refinement has now been benchmarked on one physical natural Darija/French/English sample, with meaningful but insufficient Darija improvement. Results remain current-session only.
 - Phase 0.6 benchmark results are current-session only; A/B/C remain raw independent outputs, and D is opt-in experimental only.
+- The first Phase 0.6 C control matrix could not evaluate audio understanding because the configured Gemini account returned HTTP 429 free-tier quota exhaustion for `gemini-3.7-flash` on text-only, File URI, inline-audio, SDK, and raw REST requests. Restore eligible quota or billing/access before attempting another C benchmark; do not treat this as a Darija-quality result.
 - Chirp 3 cannot be considered tested until a Cloud project, billing, Speech-to-Text API V2, and ADC are configured. The official Cloud documentation lists Moroccan Arabic `ar-MA` for Chirp 3 as Preview.
 - The local `/transcribe` endpoint is intentionally unauthenticated and accepts raw audio only for this development spike. It must not be exposed beyond the trusted development network.
 
 ## Exact next steps
 
 1. If Chirp 3 is required, enable Cloud Speech-to-Text V2, billing, and ADC as documented in `README.md`, set the local server variables, and restart the server.
-2. Reload the existing Android development build through Metro, record one fresh 20–30 second natural Darija/French/English sample, and compare LIVE, A, B, and C without normalization.
+2. After `gemini-3.7-flash` quota/access is restored, reload the existing Android development build through Metro and run one fresh 20–30 second natural Darija/French/English sample to compare LIVE, A, B, and C without normalization. No new sample is useful for C while the account remains quota-blocked.
 3. Record duration, date, local WAV URI, backend/model/configuration, raw output, status, and processing time for each result. Add a manually corrected REFERENCE only later; do not score automatically yet.
 4. Leave D disabled until A, B, and C have each succeeded independently on real samples.
 5. Keep real 8.5-minute rotation and iOS verification as later Phase 0 validation work; do not treat this benchmark as a broader product milestone.

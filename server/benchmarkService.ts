@@ -3,6 +3,8 @@ import {
   GEMINI_AUDIO_UNDERSTANDING_MODEL,
   NON_LIVE_TRANSCRIPTION_MODEL,
   WAV_MIME_TYPE,
+  createGeminiInteractionDiagnostic,
+  GeminiInteractionError,
   type GeminiTranscriptionGateway,
   type UploadedAudioFile,
 } from './transcriptionService.js';
@@ -14,6 +16,7 @@ import {
 import type {
   BenchmarkBackendId,
   BenchmarkBackendResult,
+  BenchmarkDiagnostic,
   BenchmarkResponse,
 } from '../src/types/benchmark.js';
 
@@ -62,16 +65,23 @@ function succeeded(id: BenchmarkBackendId, text: string, processingMs: number): 
     text,
     error: null,
     processingMs,
+    diagnostic: null,
   };
 }
 
-function failed(id: BenchmarkBackendId, error: string, processingMs: number | null = null): BenchmarkBackendResult {
+function failed(
+  id: BenchmarkBackendId,
+  error: string,
+  processingMs: number | null = null,
+  diagnostic: BenchmarkDiagnostic | null = null,
+): BenchmarkBackendResult {
   return {
     ...DEFINITIONS[id],
     status: 'failed',
     text: null,
     error,
     processingMs,
+    diagnostic,
   };
 }
 
@@ -110,11 +120,32 @@ async function runGeminiAudioUnderstanding(
       DARIIJA_TRANSCRIPTION_INSTRUCTION,
     );
     return succeeded('gemini-audio-understanding', text, Date.now() - startedAt);
-  } catch {
+  } catch (error) {
+    if (error instanceof GeminiInteractionError) {
+      console.error('[benchmark] audio-understanding failed', JSON.stringify(error.diagnostic));
+      return failed(
+        'gemini-audio-understanding',
+        'Gemini audio-understanding transcription failed.',
+        Date.now() - startedAt,
+        {
+          stage: error.diagnostic.stage,
+          code: error.diagnostic.code,
+          status: error.diagnostic.status,
+        },
+      );
+    }
+
+    const diagnostic = createGeminiInteractionDiagnostic(
+      error,
+      GEMINI_AUDIO_UNDERSTANDING_MODEL,
+      'during interactions.create',
+    );
+    console.error('[benchmark] audio-understanding failed', JSON.stringify(diagnostic));
     return failed(
       'gemini-audio-understanding',
       'Gemini audio-understanding transcription failed.',
       Date.now() - startedAt,
+      { stage: diagnostic.stage, code: diagnostic.code, status: diagnostic.status },
     );
   }
 }

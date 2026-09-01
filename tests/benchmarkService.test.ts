@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { runBenchmark } from '../server/benchmarkService';
+import { GeminiInteractionError } from '../server/transcriptionService';
 import type { GeminiTranscriptionGateway } from '../server/transcriptionService';
 import type { Chirp3TranscriptionGateway } from '../server/chirp3TranscriptionService';
 
@@ -68,6 +69,27 @@ describe('transcription benchmark orchestration', () => {
     const response = await runBenchmark(gemini, chirp, 'temporary.wav');
 
     expect(response.results['gemini-audio-understanding']).toMatchObject({ status: 'failed' });
+    expect(response.results['gemini-transcribe']).toMatchObject({ status: 'succeeded' });
+    expect(response.results['chirp-3-ar-MA']).toMatchObject({ status: 'succeeded' });
+  });
+
+  it('returns a safe C diagnostic while preserving A and B results', async () => {
+    const { gemini, chirp } = gateways({
+      understand: vi.fn().mockRejectedValue(new GeminiInteractionError({
+        model: 'gemini-3.7-flash',
+        stage: 'during interactions.create',
+        code: 'too_many_requests',
+        status: 429,
+        message: 'quota details stay server-side',
+      })),
+    });
+
+    const response = await runBenchmark(gemini, chirp, 'temporary.wav');
+
+    expect(response.results['gemini-audio-understanding']).toMatchObject({
+      status: 'failed',
+      diagnostic: { stage: 'during interactions.create', code: 'too_many_requests', status: 429 },
+    });
     expect(response.results['gemini-transcribe']).toMatchObject({ status: 'succeeded' });
     expect(response.results['chirp-3-ar-MA']).toMatchObject({ status: 'succeeded' });
   });
