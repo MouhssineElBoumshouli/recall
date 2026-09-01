@@ -62,15 +62,17 @@ describe('RefinedTranscriptionClient', () => {
     const client = new RefinedTranscriptionClient('http://127.0.0.1:8787', fetchImpl);
 
     await expect(client.transcribe('file:/missing.wav')).rejects.toThrow(
-      'Unable to read the saved local recording for refinement.',
+      'Unable to read the saved local recording.',
     );
   });
 
   it('surfaces a non-secret backend failure', async () => {
     const fetchImpl: RefinedTranscriptionFetch = async (_input, init) =>
-      init ? response({ error: 'backend details are not returned to the client' }, 502) : response(null);
+      init
+        ? response({ code: 'GEMINI_TRANSCRIPTION_FAILED', error: 'backend details are not returned to the client' }, 502)
+        : response(null);
     const client = new RefinedTranscriptionClient('http://127.0.0.1:8787', fetchImpl);
 
-    await expect(client.transcribe('file:/recording.wav')).rejects.toThrow('Transcript refinement failed (502).');
+    await expect(client.transcribe('file:/recording.wav')).rejects.toThrow('Gemini transcription failed.');
   });
 });

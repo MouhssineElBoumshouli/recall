@@ -74,7 +74,7 @@ The mobile app is responsible for recording state, the elapsed timer, UI state, 
 7. Reconnect buffering is bounded so a long outage cannot grow memory without limit. Dropped chunks affect live transcription only; local recording continues.
 8. The visual layer uses a small token module with warm neutral surfaces, dark ink, restrained accent color, serif display type, generous spacing, and intentionally minimal components.
 9. Refinement is deliberately a separate result. The live transcript is never overwritten, and local capture success does not depend on the refinement request.
-10. The server accepts only bounded `audio/wav` request bodies for this spike, validates the RIFF/WAVE PCM16 structure, and keeps the raw bytes only in a temporary directory while the Gemini request runs.
+10. The server accepts bounded raw request bodies for this spike, treats MIME as advisory, validates the RIFF/WAVE PCM16 structure from the bytes, and keeps the raw bytes only in a temporary directory while the Gemini request runs. Common WAV MIME variants, Android-style `application/octet-stream`, and missing MIME are accepted when the bytes are valid WAV; invalid bytes, unsupported transport with invalid bytes, and bodies over 50 MB are rejected.
 11. The refinement request uses the current JavaScript `@google/genai` Files API followed by `interactions.create` with `gemini-3.5-transcribe`, `language_codes: []`, and verbatim mode. Custom vocabulary is an empty-by-default request seam, not a Darija dictionary or correction pass.
 12. The server attempts to delete the temporary Gemini File resource after success or failure. If that remote deletion fails, it logs only a generic cleanup error and the resource follows Gemini's service lifecycle; the server's local copy is still removed.
 
@@ -84,7 +84,7 @@ Passed in the current workspace:
 
 - `npm run typecheck`
 - `npm run server:check`
-- `npm test` — 9 files, 33 tests
+- `npm test` — 9 files, 44 tests
 - `npm run lint`
 - `npx expo-doctor` — 17/18 checks; the remaining warning is that the intentionally committed native project contains app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
 - `npx expo prebuild --no-install` — Android native project generated
@@ -93,7 +93,7 @@ Passed in the current workspace:
 - Phase 0 physical result — Test C French passed.
 - Phase 0 physical result — Test D English/French code-switching passed.
 - Phase 0 physical result — Darija/French/English code-switching was partially successful and inconsistent: Darija sometimes omitted words or changed script, while English/French/Spanish switching was substantially more reliable.
-- Phase 0.5 static result — `npm run typecheck`, `npm run server:check`, `npm test` (9 files, 33 tests), and `npm run lint` passed. `npx expo-doctor` reports 17/18 checks passed; its existing warning is the committed native project containing app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
+- Phase 0.5 static result — `npm run typecheck`, `npm run server:check`, `npm test` (9 files, 44 tests), and `npm run lint` passed. `npx expo-doctor` reports 17/18 checks passed; its existing warning is the committed native project containing app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
 
 Runtime verification attempted on Windows:
 
@@ -123,6 +123,12 @@ Runtime verification update — physical Android device:
 - Phase 0 physical result — Test E natural Darija/French/English switching was partially successful and inconsistent. Darija sometimes missed words or changed between Arabic and Latin script; English/French/Spanish switching was substantially more reliable.
 - Phase 0 physical result — Test F confirmed local audio capture survives Gemini unavailability.
 - Phase 0.5 physical benchmark recordings A–D have not yet been run. They require manual speech on the already validated Android development build.
+- Phase 0.5 physical test reached `/transcribe` after successful local stops, but every refinement attempt initially returned HTTP 415 before Gemini transcription. Refined output was therefore not evaluated in that run.
+- The previous 415 came from the server requiring an exact `Content-Type: audio/wav` before inspecting the body. React Native Android's Blob request handling can use the Blob's own MIME metadata or fall back to `application/octet-stream`, overriding the caller's header. The exact header from the failed physical request was not captured before this diagnostic was added.
+- `/transcribe` now logs only the normalized incoming Content-Type and Content-Length, then validates the raw bytes as RIFF/WAVE PCM16. The server accepts `audio/wav`, `audio/x-wav`, `audio/wave`, `audio/vnd.wave`, `application/octet-stream`, missing MIME, and any other transport MIME when the bytes themselves are a valid WAV. Invalid bytes remain rejected, and the 50 MB limit remains enforced.
+- Refinement failures now use non-secret error codes for missing audio, unsupported transport, invalid WAV, oversized upload, Gemini Files upload failure, and Gemini transcription failure. The mobile client maps these to concise messages without exposing server internals.
+- Retry refinement now has an explicit in-flight controller: a retry enters `Refining transcript…`, blocks duplicate requests, and transitions to either succeeded or failed. The Retry button is not shown while a request is active.
+- The existing Android development build was reloaded through Metro after the transport fix. No native rebuild or dependency/configuration change was required. `adb reverse` remains configured for ports 8081 and 8787. No new physical recording has been performed after the fix; the next recording should capture the server's non-sensitive Content-Type diagnostic.
 
 Version control:
 
@@ -147,13 +153,13 @@ Not yet validated here:
 - During a connection outage, only a small bounded number of chunks are held for replay. A prolonged outage may produce gaps in the live transcript while the source recording remains intact.
 - There is no local session database, playback control, transcript export, or durable refinement history.
 - The current UI is a Phase 0 validation surface, not the final Recall navigation or accessibility pass.
-- Phase 0.5 refinement has not yet been benchmarked on physical recordings. Its result is held in memory for the current captured session only.
+- Phase 0.5 refinement has not yet been benchmarked successfully on physical recordings. Its result is held in memory for the current captured session only.
 - The local `/transcribe` endpoint is intentionally unauthenticated and accepts raw audio only for this development spike. It must not be exposed beyond the trusted development network.
 
 ## Exact next steps
 
-1. Run Phase 0.5 benchmark A on the existing Android build and compare live versus refined English output.
-2. Run benchmark B for French, C for English/French switching, and D for natural Darija/French/English switching; preserve the raw outputs without normalization.
-3. Record refinement status, duration, local file URI, and both transcripts for each benchmark in the project notes.
-4. If refinement fails, inspect the server and captured-screen diagnostics without making recording success depend on the request.
+1. Run one short Phase 0.5 English recording on the existing Android build. Watch the token-server terminal for `[transcribe] received content-type=...` and the app for `Refining transcript…`, then compare live versus refined output.
+2. If that request succeeds, run benchmark B for French, C for English/French switching, and D for natural Darija/French/English switching; preserve raw outputs without normalization.
+3. Record refinement status, duration, local file URI, server-observed transport MIME, and both transcripts for each benchmark in the project notes.
+4. If refinement fails, use the typed app error plus server Content-Type diagnostic to distinguish transport validation, WAV validation, Gemini upload, and Gemini transcription failures.
 5. Keep real 8.5-minute rotation and iOS verification as later Phase 0 validation work; do not treat the Phase 0.5 benchmark as a new product feature milestone.

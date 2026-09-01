@@ -5,16 +5,22 @@ import { join } from 'node:path';
 import { config } from 'dotenv';
 import { GoogleGenAI, Modality } from '@google/genai';
 
-import { createGeminiTranscriptionGateway, transcribeWavFile } from './transcriptionService.js';
-import { validateWavBuffer } from './wavValidation.js';
+import {
+  createGeminiTranscriptionGateway,
+  RefinementServiceError,
+  transcribeWavFile,
+} from './transcriptionService.js';
+import {
+  isWithinTranscriptionLimit,
+  normalizeContentType,
+  validateWavRequest,
+} from './wavValidation.js';
 
 config();
 
 const port = Number(process.env.TOKEN_SERVER_PORT || 8_787);
 const apiKey = process.env.GEMINI_API_KEY;
 const model = 'gemini-3.5-transcribe-live';
-const maxTranscriptionBytes = 50 * 1024 * 1024;
-
 class RequestBodyTooLargeError extends Error {}
 
 function sendJson(response: import('node:http').ServerResponse, status: number, body: unknown) {
@@ -35,7 +41,7 @@ function readRequestBody(request: import('node:http').IncomingMessage): Promise<
 
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       totalBytes += buffer.length;
-      if (totalBytes > maxTranscriptionBytes) {
+      if (!isWithinTranscriptionLimit(totalBytes)) {
         settled = true;
         reject(new RequestBodyTooLargeError('Audio exceeds the Phase 0.5 upload limit.'));
         return;
@@ -147,24 +153,28 @@ if (!apiKey) {
     }
 
     if (request.method === 'POST' && pathname === '/transcribe') {
-      const contentType = request.headers['content-type']?.split(';', 1)[0].trim().toLowerCase();
-      if (contentType !== 'audio/wav') {
-        sendJson(response, 415, { error: 'Content-Type must be audio/wav.' });
-        return;
-      }
+      const rawContentType = request.headers['content-type'];
+      const contentTypeHeader = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+      const contentType = normalizeContentType(contentTypeHeader);
+      console.info(
+        `[transcribe] received content-type=${contentType || 'missing'} content-length=${request.headers['content-length'] || 'missing'}`,
+      );
 
       const contentLength = Number(request.headers['content-length']);
-      if (Number.isFinite(contentLength) && contentLength > maxTranscriptionBytes) {
-        sendJson(response, 413, { error: 'Audio exceeds the Phase 0.5 upload limit.' });
+      if (Number.isFinite(contentLength) && !isWithinTranscriptionLimit(contentLength)) {
+        sendJson(response, 413, { code: 'AUDIO_TOO_LARGE', error: 'Audio exceeds the Phase 0.5 upload limit.' });
         return;
       }
 
       let temporaryDirectory: string | null = null;
       try {
         const audio = await readRequestBody(request);
-        const validation = validateWavBuffer(audio);
+        const validation = validateWavRequest(contentType || undefined, audio);
         if (!validation.valid) {
-          sendJson(response, 400, { error: validation.error || 'Invalid WAV audio.' });
+          sendJson(response, validation.statusCode, {
+            code: validation.code,
+            error: validation.error || 'Invalid WAV audio.',
+          });
           return;
         }
 
@@ -178,13 +188,12 @@ if (!apiKey) {
         sendJson(response, 200, result);
       } catch (error) {
         if (error instanceof RequestBodyTooLargeError) {
-          sendJson(response, 413, { error: 'Audio exceeds the Phase 0.5 upload limit.' });
+          sendJson(response, 413, { code: 'AUDIO_TOO_LARGE', error: 'Audio exceeds the Phase 0.5 upload limit.' });
+        } else if (error instanceof RefinementServiceError) {
+          sendJson(response, 502, { code: error.code, error: error.message });
         } else {
-          console.error(
-            'Unable to refine uploaded audio:',
-            error instanceof Error ? error.message : 'unknown error',
-          );
-          sendJson(response, 502, { error: 'Unable to refine the recording transcript.' });
+          console.error('Unable to refine uploaded audio: unexpected server error.');
+          sendJson(response, 502, { code: 'REFINEMENT_FAILED', error: 'Unable to refine the recording transcript.' });
         }
       } finally {
         if (temporaryDirectory) {

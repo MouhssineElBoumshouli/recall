@@ -23,6 +23,18 @@ export interface GeminiTranscriptionGateway {
   delete(fileName: string): Promise<void>;
 }
 
+export type RefinementServiceErrorCode = 'GEMINI_UPLOAD_FAILED' | 'GEMINI_TRANSCRIPTION_FAILED';
+
+export class RefinementServiceError extends Error {
+  readonly code: RefinementServiceErrorCode;
+
+  constructor(code: RefinementServiceErrorCode, message: string) {
+    super(message);
+    this.name = 'RefinementServiceError';
+    this.code = code;
+  }
+}
+
 function cleanVocabulary(vocabulary: string[] | undefined): string[] {
   return (vocabulary ?? [])
     .map((phrase) => phrase.trim())
@@ -68,12 +80,21 @@ export async function transcribeWavFile(
   let uploadedFile: UploadedAudioFile | null = null;
 
   try {
-    uploadedFile = await gateway.upload(filePath, WAV_MIME_TYPE);
+    try {
+      uploadedFile = await gateway.upload(filePath, WAV_MIME_TYPE);
+    } catch {
+      throw new RefinementServiceError('GEMINI_UPLOAD_FAILED', 'Gemini Files upload failed.');
+    }
     if (!uploadedFile.uri) {
-      throw new Error('Gemini did not return an uploaded audio URI.');
+      throw new RefinementServiceError('GEMINI_UPLOAD_FAILED', 'Gemini Files upload returned no audio URI.');
     }
 
-    const text = await gateway.transcribe(uploadedFile.uri, uploadedFile.mimeType || WAV_MIME_TYPE, options);
+    let text: string;
+    try {
+      text = await gateway.transcribe(uploadedFile.uri, uploadedFile.mimeType || WAV_MIME_TYPE, options);
+    } catch {
+      throw new RefinementServiceError('GEMINI_TRANSCRIPTION_FAILED', 'Gemini transcription failed.');
+    }
     return { model: NON_LIVE_TRANSCRIPTION_MODEL, text };
   } finally {
     if (uploadedFile?.name) {

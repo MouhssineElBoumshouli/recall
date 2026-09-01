@@ -2,11 +2,17 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createGeminiTranscriptionGateway,
+  RefinementServiceError,
   transcribeWavFile,
   type GeminiTranscriptionGateway,
 } from '../server/transcriptionService';
 import type { GoogleGenAI } from '@google/genai';
-import { validateWavBuffer } from '../server/wavValidation';
+import {
+  isWithinTranscriptionLimit,
+  MAX_TRANSCRIPTION_BYTES,
+  validateWavBuffer,
+  validateWavRequest,
+} from '../server/wavValidation';
 
 function validWav(): Buffer {
   const dataBytes = 4;
@@ -42,13 +48,50 @@ describe('WAV validation', () => {
   });
 
   it.each([
-    ['missing audio', null],
-    ['not a WAV', Buffer.from('not audio')],
-  ])('rejects %s without contacting Gemini', (_label, audio) => {
-    const result = validateWavBuffer(audio);
+    ['audio/wav', 'audio/wav'],
+    ['audio/x-wav', 'audio/x-wav'],
+    ['audio/wave', 'audio/wave'],
+    ['audio/vnd.wave', 'audio/vnd.wave'],
+    ['Android octet-stream', 'application/octet-stream'],
+    ['missing MIME', undefined],
+  ])('accepts valid WAV bytes with %s', (_label, contentType) => {
+    const result = validateWavRequest(contentType, validWav());
+
+    expect(result.valid).toBe(true);
+    expect(result.statusCode).toBe(200);
+  });
+
+  it('rejects missing and invalid audio without contacting Gemini', () => {
+    const missing = validateWavRequest('audio/wav', null);
+    const invalid = validateWavRequest('audio/wav', Buffer.from('not audio'));
+    const missingWithUnhelpfulMime = validateWavRequest('text/plain', Buffer.alloc(0));
+
+    expect(missing).toMatchObject({ valid: false, statusCode: 400, code: 'MISSING_AUDIO' });
+    expect(invalid).toMatchObject({ valid: false, statusCode: 400, code: 'INVALID_WAV' });
+    expect(missingWithUnhelpfulMime).toMatchObject({ valid: false, statusCode: 400, code: 'MISSING_AUDIO' });
+  });
+
+  it('rejects an unsupported transport MIME only when the bytes are not a WAV', () => {
+    const result = validateWavRequest('text/plain', Buffer.from('not audio'));
+
+    expect(result).toMatchObject({
+      valid: false,
+      statusCode: 415,
+      code: 'UNSUPPORTED_TRANSPORT_MIME',
+    });
+  });
+
+  it('rejects invalid bytes even when the MIME says audio/wav', () => {
+    const result = validateWavRequest('audio/wav', Buffer.from('not audio'));
 
     expect(result.valid).toBe(false);
+    expect(result.code).toBe('INVALID_WAV');
     expect(result.metadata).toBeNull();
+  });
+
+  it('retains the 50 MB upload limit', () => {
+    expect(isWithinTranscriptionLimit(MAX_TRANSCRIPTION_BYTES)).toBe(true);
+    expect(isWithinTranscriptionLimit(MAX_TRANSCRIPTION_BYTES + 1)).toBe(false);
   });
 });
 
@@ -115,7 +158,24 @@ describe('transcribeWavFile', () => {
       delete: vi.fn().mockResolvedValue(undefined),
     };
 
-    await expect(transcribeWavFile(gateway, 'temporary.wav')).rejects.toThrow('Gemini unavailable');
+    await expect(transcribeWavFile(gateway, 'temporary.wav')).rejects.toMatchObject({
+      code: 'GEMINI_TRANSCRIPTION_FAILED',
+      message: 'Gemini transcription failed.',
+    });
     expect(gateway.delete).toHaveBeenCalledWith('files/temporary');
+  });
+
+  it('reports a Gemini Files upload failure without exposing the underlying error', async () => {
+    const gateway: GeminiTranscriptionGateway = {
+      upload: vi.fn().mockRejectedValue(new Error('secret provider details')),
+      transcribe: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    await expect(transcribeWavFile(gateway, 'temporary.wav')).rejects.toMatchObject({
+      code: 'GEMINI_UPLOAD_FAILED',
+      message: 'Gemini Files upload failed.',
+    });
+    expect(gateway.transcribe).not.toHaveBeenCalled();
   });
 });

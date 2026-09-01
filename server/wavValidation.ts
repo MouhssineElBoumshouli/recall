@@ -13,8 +13,38 @@ export interface WavValidationResult {
   metadata: WavMetadata | null;
 }
 
+export const MAX_TRANSCRIPTION_BYTES = 50 * 1024 * 1024;
+
+export const WAV_TRANSPORT_MIME_TYPES: ReadonlySet<string> = new Set([
+  'audio/wav',
+  'audio/x-wav',
+  'audio/wave',
+  'audio/vnd.wave',
+  'application/octet-stream',
+]);
+
+export type WavRequestErrorCode = 'MISSING_AUDIO' | 'INVALID_WAV' | 'UNSUPPORTED_TRANSPORT_MIME';
+
+export interface WavRequestValidationResult {
+  valid: boolean;
+  statusCode: 200 | 400 | 415;
+  code: WavRequestErrorCode | null;
+  error: string | null;
+  contentType: string | null;
+  metadata: WavMetadata | null;
+}
+
 function ascii(buffer: Buffer, offset: number, length: number): string {
   return buffer.subarray(offset, offset + length).toString('ascii');
+}
+
+export function normalizeContentType(value: string | undefined): string | null {
+  const normalized = value?.split(';', 1)[0].trim().toLowerCase();
+  return normalized || null;
+}
+
+export function isWithinTranscriptionLimit(byteLength: number): boolean {
+  return Number.isSafeInteger(byteLength) && byteLength >= 0 && byteLength <= MAX_TRANSCRIPTION_BYTES;
 }
 
 export function validateWavBuffer(buffer: Buffer | null | undefined): WavValidationResult {
@@ -93,5 +123,55 @@ export function validateWavBuffer(buffer: Buffer | null | undefined): WavValidat
       dataBytes,
       durationMs: (dataBytes / blockAlign / format.sampleRate) * 1_000,
     },
+  };
+}
+
+export function validateWavRequest(
+  contentType: string | undefined,
+  buffer: Buffer | null | undefined,
+): WavRequestValidationResult {
+  const normalizedContentType = normalizeContentType(contentType);
+  const validation = validateWavBuffer(buffer);
+
+  if (!buffer || buffer.length === 0) {
+    return {
+      valid: false,
+      statusCode: 400,
+      code: 'MISSING_AUDIO',
+      error: 'Audio body is missing.',
+      contentType: normalizedContentType,
+      metadata: null,
+    };
+  }
+
+  if (validation.valid) {
+    return {
+      valid: true,
+      statusCode: 200,
+      code: null,
+      error: null,
+      contentType: normalizedContentType,
+      metadata: validation.metadata,
+    };
+  }
+
+  if (normalizedContentType && !WAV_TRANSPORT_MIME_TYPES.has(normalizedContentType)) {
+    return {
+      valid: false,
+      statusCode: 415,
+      code: 'UNSUPPORTED_TRANSPORT_MIME',
+      error: 'Unsupported audio transport type.',
+      contentType: normalizedContentType,
+      metadata: null,
+    };
+  }
+
+  return {
+    valid: false,
+    statusCode: 400,
+    code: 'INVALID_WAV',
+    error: validation.error || 'Invalid WAV audio.',
+    contentType: normalizedContentType,
+    metadata: null,
   };
 }

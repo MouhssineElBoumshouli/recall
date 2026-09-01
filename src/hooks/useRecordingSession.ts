@@ -10,6 +10,7 @@ import { tokenServerUrl } from '@/config';
 import { colors } from '@/design/tokens';
 import { createBookmark } from '@/services/bookmarkService';
 import { GeminiTokenClient } from '@/services/geminiTokenClient';
+import { RefinementAttemptController } from '@/services/refinementAttemptController';
 import {
   LiveTranscriptionSessionManager,
   type ManagedTranscriptEvent,
@@ -129,10 +130,10 @@ export function useRecordingSession() {
   const phaseRef = useRef<RecordingPhase>('idle');
   const startedAtMsRef = useRef(0);
   const nativeStartedRef = useRef(false);
-  const refinementAttemptRef = useRef(0);
   const bookmarksRef = useRef<Bookmark[]>([]);
   const [transcriptAccumulator] = useState(() => new TranscriptAccumulator());
   const [refinementClient] = useState(() => new RefinedTranscriptionClient(tokenServerUrl));
+  const [refinementController] = useState(() => new RefinementAttemptController());
   const [manager] = useState(
     () =>
       new LiveTranscriptionSessionManager({
@@ -202,23 +203,23 @@ export function useRecordingSession() {
 
   const runRefinement = useCallback(
     async (fileUri: string | null, attempt: number) => {
-      if (!fileUri) {
-        if (attempt === refinementAttemptRef.current) {
-          setRefinement((current) => refinementFailed(current, 'The local audio file is unavailable for refinement.'));
-        }
-        return;
-      }
-
       try {
+        if (!fileUri) {
+          setRefinement((current) =>
+            refinementFailed(current, 'The local audio file is unavailable for refinement.'),
+          );
+          return;
+        }
+
         const result = await refinementClient.transcribe(fileUri);
-        if (attempt !== refinementAttemptRef.current) {
+        if (!refinementController.isCurrent(attempt)) {
           return;
         }
         setRefinement((current) =>
           refinementSucceeded(current, result.text, result.model, new Date().toISOString()),
         );
       } catch (refinementError) {
-        if (attempt !== refinementAttemptRef.current) {
+        if (!refinementController.isCurrent(attempt)) {
           return;
         }
         setRefinement((current) =>
@@ -227,9 +228,11 @@ export function useRecordingSession() {
             refinementError instanceof Error ? refinementError.message : 'Transcript refinement failed.',
           ),
         );
+      } finally {
+        refinementController.finish(attempt);
       }
     },
-    [refinementClient],
+    [refinementClient, refinementController],
   );
 
   const start = useCallback(async () => {
@@ -241,7 +244,7 @@ export function useRecordingSession() {
     setPhase('starting');
     setError(null);
     setStoppedRecording(null);
-    refinementAttemptRef.current += 1;
+    refinementController.invalidate();
     setRefinement({ ...initialRefinementState });
     transcriptAccumulator.reset();
     bookmarksRef.current = [];
@@ -298,7 +301,7 @@ export function useRecordingSession() {
       }
       await manager.stop();
     }
-  }, [manager, prepareRecording, startNativeRecording, stopNativeRecording, transcriptAccumulator]);
+  }, [manager, prepareRecording, refinementController, startNativeRecording, stopNativeRecording, transcriptAccumulator]);
 
   const stop = useCallback(async () => {
     if (phaseRef.current !== 'recording') {
@@ -336,13 +339,14 @@ export function useRecordingSession() {
     setDebug(nextDebug);
     setConnectionState(nextDebug.connectionState);
     setError(stopError);
-    const refinementAttempt = refinementAttemptRef.current + 1;
-    refinementAttemptRef.current = refinementAttempt;
-    setRefinement((current) => refinementStarted(current));
-    void runRefinement(recording?.fileUri || null, refinementAttempt);
+    const refinementAttempt = refinementController.begin();
+    if (refinementAttempt !== null) {
+      setRefinement((current) => refinementStarted(current));
+      void runRefinement(recording?.fileUri || null, refinementAttempt);
+    }
     phaseRef.current = 'stopped';
     setPhase('stopped');
-  }, [manager, runRefinement, stopNativeRecording, transcriptAccumulator]);
+  }, [manager, refinementController, runRefinement, stopNativeRecording, transcriptAccumulator]);
 
   const addBookmark = useCallback(() => {
     if (phaseRef.current !== 'recording') {
@@ -363,7 +367,7 @@ export function useRecordingSession() {
     phaseRef.current = 'idle';
     setPhase('idle');
     setStoppedRecording(null);
-    refinementAttemptRef.current += 1;
+    refinementController.invalidate();
     setRefinement({ ...initialRefinementState });
     setError(null);
     setElapsedMs(0);
@@ -372,19 +376,22 @@ export function useRecordingSession() {
     setBookmarks([]);
     setConnectionState('idle');
     setDebug({ ...initialDebug });
-  }, []);
+  }, [refinementController]);
 
   const retryRefinement = useCallback(() => {
-    if (phaseRef.current !== 'stopped') {
+    if (phaseRef.current !== 'stopped' || refinement.status !== 'failed') {
       return;
     }
 
     const fileUri = stoppedRecording?.recording?.fileUri || null;
-    const refinementAttempt = refinementAttemptRef.current + 1;
-    refinementAttemptRef.current = refinementAttempt;
+    const refinementAttempt = refinementController.begin();
+    if (refinementAttempt === null) {
+      return;
+    }
+
     setRefinement((current) => refinementStarted(current));
     void runRefinement(fileUri, refinementAttempt);
-  }, [runRefinement, stoppedRecording]);
+  }, [refinement, refinementController, runRefinement, stoppedRecording]);
 
   return {
     phase,
