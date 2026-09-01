@@ -10,6 +10,7 @@ import {
 import { colors, displayFont, layout, radii, spacing, typography } from '@/design/tokens';
 import { useRecordingSession } from '@/hooks/useRecordingSession';
 import type { Bookmark } from '@/types/bookmark';
+import type { TranscriptRefinementState } from '@/types/refinement';
 import type { StoppedRecording } from '@/types/recording';
 import type { TranscriptSegment } from '@/types/transcript';
 import { formatElapsedMs, formatTimestampMs } from '@/utils/time';
@@ -224,13 +225,17 @@ function RecordingScreen({
 function StoppedScreen({
   stoppedRecording,
   error,
+  refinement,
+  onRetryRefinement,
   onReset,
 }: {
   stoppedRecording: StoppedRecording;
   error: string | null;
+  refinement: TranscriptRefinementState;
+  onRetryRefinement: () => void;
   onReset: () => void;
 }) {
-  const { recording, durationMs, finalizedSegments, bookmarks, debug } = stoppedRecording;
+  const { recording, recordedAt, durationMs, finalizedSegments, bookmarks, debug } = stoppedRecording;
   return (
     <ScrollView contentContainerStyle={styles.screenContent}>
       <Header eyebrow="CAPTURE COMPLETE" title="Captured." />
@@ -238,6 +243,10 @@ function StoppedScreen({
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>DURATION</Text>
           <Text style={styles.metaValue}>{formatElapsedMs(durationMs)}</Text>
+        </View>
+        <View style={styles.metaRow}>
+          <Text style={styles.metaLabel}>RECORDED</Text>
+          <Text style={styles.metaValue}>{new Date(recordedAt).toLocaleString()}</Text>
         </View>
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>LOCAL AUDIO</Text>
@@ -256,12 +265,38 @@ function StoppedScreen({
       </View>
 
       <View style={styles.rule} />
-      <SectionLabel>TRANSCRIPT</SectionLabel>
+      <SectionLabel>LIVE TRANSCRIPT</SectionLabel>
       <View style={styles.transcriptBlock}>
         {finalizedSegments.length === 0 ? (
           <Text style={styles.emptyTranscript}>No finalized transcript segments were received.</Text>
         ) : (
           <TranscriptLines segments={finalizedSegments} />
+        )}
+      </View>
+
+      <View style={styles.refinementSection}>
+        <View style={styles.transcriptHeader}>
+          <SectionLabel>REFINED TRANSCRIPT</SectionLabel>
+          <Text style={styles.segmentCount}>{refinement.status}</Text>
+        </View>
+        {refinement.status === 'refining' && (
+          <Text style={styles.emptyTranscript}>Refining transcript…</Text>
+        )}
+        {refinement.status === 'succeeded' && (
+          <View style={styles.refinedTranscriptBlock}>
+            {refinement.text ? (
+              <Text style={styles.transcriptText}>{refinement.text}</Text>
+            ) : (
+              <Text style={styles.emptyTranscript}>No speech was returned by the refined transcription.</Text>
+            )}
+            {refinement.model && <Text style={styles.debugText}>{refinement.model} · verbatim</Text>}
+          </View>
+        )}
+        {refinement.status === 'failed' && (
+          <View style={styles.refinementError}>
+            <Text style={styles.errorText}>{refinement.error || 'Transcript refinement failed.'}</Text>
+            <PressableButton label="Retry refinement" onPress={onRetryRefinement} variant="secondary" />
+          </View>
         )}
       </View>
 
@@ -326,7 +361,13 @@ export default function RecallScreen() {
   if (session.phase === 'stopped' && session.stoppedRecording) {
     return (
       <View style={styles.container}>
-        <StoppedScreen stoppedRecording={session.stoppedRecording} error={session.error} onReset={session.reset} />
+        <StoppedScreen
+          stoppedRecording={session.stoppedRecording}
+          error={session.error}
+          refinement={session.refinement}
+          onRetryRefinement={session.retryRefinement}
+          onReset={session.reset}
+        />
       </View>
     );
   }
@@ -537,6 +578,19 @@ const styles = StyleSheet.create({
   },
   transcriptBlock: {
     gap: spacing.lg,
+    paddingVertical: spacing.lg,
+  },
+  refinementSection: {
+    paddingTop: spacing.lg,
+    borderTopWidth: 1,
+    borderColor: colors.line,
+  },
+  refinedTranscriptBlock: {
+    gap: spacing.sm,
+    paddingVertical: spacing.lg,
+  },
+  refinementError: {
+    gap: spacing.md,
     paddingVertical: spacing.lg,
   },
   transcriptLine: {

@@ -32,6 +32,7 @@ export interface RecordingDebugInfo {
 
 export interface StoppedRecording {
   recording: AudioRecording | null;
+  recordedAt: string;
   durationMs: number;
   finalizedSegments: TranscriptSegment[];
   bookmarks: Bookmark[];

@@ -1,4 +1,4 @@
-# Recall — Phase 0 project status
+# Recall — Phase 0.5 project status
 
 Status date: 2026-09-01
 
@@ -21,6 +21,13 @@ Status date: 2026-09-01
 - Added app cleanup and stop ordering that prioritizes finalizing the local recording before shutting down Gemini.
 - Added hardware-independent Vitest coverage for transcript accumulation, deduplication, timestamp conversion, rotation timing, connection transitions, manager rotation, and bookmark creation.
 - Added `.env.example`, README instructions, and this status handoff.
+- Added a post-recording `/transcribe` endpoint for bounded raw WAV uploads.
+- Added RIFF/WAVE PCM16 validation with useful non-secret metadata checks before contacting Gemini.
+- Added server-side Files API upload and `client.interactions.create` refinement using `gemini-3.5-transcribe`, automatic language detection, and verbatim mode.
+- Added best-effort deletion of the temporary Gemini File resource and guaranteed cleanup of the server's local temporary directory.
+- Added a separate mobile refinement client/state path. The captured screen appears without waiting for refinement and preserves live transcript, local audio, and refinement failure independently.
+- Added a temporary dual-output display for `LIVE TRANSCRIPT` and `REFINED TRANSCRIPT`, with non-destructive retry after a refinement failure.
+- Added hardware-independent tests for refinement transitions, distinct live/refined output, client upload/error behavior, WAV validation, Gemini gateway cleanup, and the no-client-credential boundary.
 
 ## Current architecture
 
@@ -41,6 +48,19 @@ useRecordingSession
         └── bookmarkService
 ```
 
+After local capture finalizes:
+
+```text
+Stopped screen
+        ├── existing live finalized transcript
+        └── asynchronous RefinedTranscriptionClient → server/index.ts /transcribe
+                ├── temporary local WAV
+                ├── Gemini Files API upload
+                ├── gemini-3.5-transcribe Interactions request
+                ├── best-effort Gemini File deletion
+                └── temporary local WAV cleanup
+```
+
 The mobile app is responsible for recording state, the elapsed timer, UI state, and the one audio source. The manager is responsible for Gemini connection lifecycle only. The token server is intentionally a replaceable boundary: a future deployed service can preserve the mobile `/token` contract without moving the Gemini API key into the app.
 
 ## Important implementation decisions
@@ -53,6 +73,10 @@ The mobile app is responsible for recording state, the elapsed timer, UI state, 
 6. The mobile client connects directly to Gemini with a short-lived token. The long-lived key exists only in the local Node server environment.
 7. Reconnect buffering is bounded so a long outage cannot grow memory without limit. Dropped chunks affect live transcription only; local recording continues.
 8. The visual layer uses a small token module with warm neutral surfaces, dark ink, restrained accent color, serif display type, generous spacing, and intentionally minimal components.
+9. Refinement is deliberately a separate result. The live transcript is never overwritten, and local capture success does not depend on the refinement request.
+10. The server accepts only bounded `audio/wav` request bodies for this spike, validates the RIFF/WAVE PCM16 structure, and keeps the raw bytes only in a temporary directory while the Gemini request runs.
+11. The refinement request uses the current JavaScript `@google/genai` Files API followed by `interactions.create` with `gemini-3.5-transcribe`, `language_codes: []`, and verbatim mode. Custom vocabulary is an empty-by-default request seam, not a Darija dictionary or correction pass.
+12. The server attempts to delete the temporary Gemini File resource after success or failure. If that remote deletion fails, it logs only a generic cleanup error and the resource follows Gemini's service lifecycle; the server's local copy is still removed.
 
 ## Validation status
 
@@ -60,11 +84,16 @@ Passed in the current workspace:
 
 - `npm run typecheck`
 - `npm run server:check`
-- `npm test` — 6 files, 20 tests
+- `npm test` — 9 files, 33 tests
 - `npm run lint`
 - `npx expo-doctor` — 17/18 checks; the remaining warning is that the intentionally committed native project contains app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
 - `npx expo prebuild --no-install` — Android native project generated
 - Generated Android manifest contains `android.permission.RECORD_AUDIO`.
+- Phase 0 physical result — Test B English passed with live interim/final transcription.
+- Phase 0 physical result — Test C French passed.
+- Phase 0 physical result — Test D English/French code-switching passed.
+- Phase 0 physical result — Darija/French/English code-switching was partially successful and inconsistent: Darija sometimes omitted words or changed script, while English/French/Spanish switching was substantially more reliable.
+- Phase 0.5 static result — `npm run typecheck`, `npm run server:check`, `npm test` (9 files, 33 tests), and `npm run lint` passed. `npx expo-doctor` reports 17/18 checks passed; its existing warning is the committed native project containing app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
 
 Runtime verification attempted on Windows:
 
@@ -90,7 +119,10 @@ Runtime verification update — physical Android device:
 - Gemini Live protocol hardening is now implemented: the connection resolves only after `setupComplete`, audio is gated until setup, current camelCase interim/final fields are emitted independently, and stop/rotation send `audioStreamEnd` then wait for `turnComplete` with a bounded timeout and a short late-final drain.
 - Controlled handshake diagnosis — `@google/genai` 2.19.0's installed source selects `BidiGenerateContentConstrained` for `auth_tokens/...` credentials and documents its ephemeral-token support as `v1alpha` only. Current Google documentation describes raw ephemeral-token connections on `v1beta`; fresh minimal-token official-SDK connections succeeded on both versions, as did raw Node WebSocket connections on both versions. A token issued by the existing server, including `lockAdditionalFields`, also completed setup successfully. No API-version or token-configuration change was justified.
 - React Native handshake diagnosis — a temporary development-only app probe completed the direct mobile handshake without audio and recorded `socketOpened=true`, `setupSent=true`, `setupComplete=true`, one server message, and `arrayBuffer` as the message data type. The prior adapter discarded non-string WebSocket frames before counting or parsing them. The adapter now decodes supported text, `ArrayBuffer`, and `Blob` frames and records token/setup/timeout/message-type diagnostics. The disposable probe was removed and is not committed.
-- Tests C–F have not yet been run. Full physical-device retesting remains pending after the development build reload.
+- Phase 0 physical results — Test B English, Test C French, and Test D English/French code-switching passed. Live interim and finalized transcription worked, and local recording remained reliable.
+- Phase 0 physical result — Test E natural Darija/French/English switching was partially successful and inconsistent. Darija sometimes missed words or changed between Arabic and Latin script; English/French/Spanish switching was substantially more reliable.
+- Phase 0 physical result — Test F confirmed local audio capture survives Gemini unavailability.
+- Phase 0.5 physical benchmark recordings A–D have not yet been run. They require manual speech on the already validated Android development build.
 
 Version control:
 
@@ -101,10 +133,8 @@ Not yet validated here:
 
 - Native microphone permission prompt and denial flow.
 - Actual PCM callback payload and local-file finalization from Android/iOS hardware.
-- Reachability of the token server from an emulator or physical device.
-- Gemini ephemeral-token issuance with a real key.
-- Direct Gemini WebSocket setup, interim/final event shape, multilingual transcription, disconnect/reconnect, and real 8.5-minute rotation.
-- Audio preservation when the network or Gemini is disabled.
+- Phase 0.5 non-live transcription against a saved WAV on a physical Android device.
+- Remote Gemini File deletion behavior under an actual refinement request; the cleanup path is unit-tested and logs no secret or audio content.
 - App backgrounding, OS interruptions, Bluetooth routes, phone calls, and low-storage behavior.
 
 ## Known issues and limits
@@ -115,15 +145,15 @@ Not yet validated here:
 - The token endpoint is intentionally local, unauthenticated, and permissive-CORS. It is not deployable as-is.
 - The fallback timestamp is based on when a Gemini event is received, not word-level audio timing.
 - During a connection outage, only a small bounded number of chunks are held for replay. A prolonged outage may produce gaps in the live transcript while the source recording remains intact.
-- There is no local session database, playback control, upload, transcript export, or retry UI beyond connection/debug state.
+- There is no local session database, playback control, transcript export, or durable refinement history.
 - The current UI is a Phase 0 validation surface, not the final Recall navigation or accessibility pass.
+- Phase 0.5 refinement has not yet been benchmarked on physical recordings. Its result is held in memory for the current captured session only.
+- The local `/transcribe` endpoint is intentionally unauthenticated and accepts raw audio only for this development spike. It must not be exposed beyond the trusted development network.
 
 ## Exact next steps
 
-1. Reload the existing Android development build and repeat Test B against the hardened React Native WebSocket frame handling.
-2. If Test B passes, verify Tests C–F on the physical device, including the non-destructive transcription-unavailable case.
-3. Upgrade Node to a supported 22.x patch if native build tooling reports engine problems.
-4. On macOS, build and verify the equivalent iOS development client and permission flow.
-5. Add deterministic integration seams for forced connection failure and shortened rotation tests on device builds, without adding a fake microphone end-to-end test.
-6. Harden the token server boundary (authentication, rate limiting, HTTPS, origin policy, and deployment) before any shared or production use.
-7. Only after the capture/transcription spike is reliable, add local session persistence and playback as the next product milestone.
+1. Run Phase 0.5 benchmark A on the existing Android build and compare live versus refined English output.
+2. Run benchmark B for French, C for English/French switching, and D for natural Darija/French/English switching; preserve the raw outputs without normalization.
+3. Record refinement status, duration, local file URI, and both transcripts for each benchmark in the project notes.
+4. If refinement fails, inspect the server and captured-screen diagnostics without making recording success depend on the request.
+5. Keep real 8.5-minute rotation and iOS verification as later Phase 0 validation work; do not treat the Phase 0.5 benchmark as a new product feature milestone.
