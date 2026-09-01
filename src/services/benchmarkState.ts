@@ -31,6 +31,7 @@ function createInitialResults(status: BenchmarkBackendResult['status'], includeR
     'gemini-transcribe': createResult('gemini-transcribe', status),
     'chirp-3-ar-MA': createResult('chirp-3-ar-MA', status),
     'gemini-audio-understanding': createResult('gemini-audio-understanding', status),
+    'gemini-flash-lite': createResult('gemini-flash-lite', status),
   };
 
   if (includeReconciliation) {

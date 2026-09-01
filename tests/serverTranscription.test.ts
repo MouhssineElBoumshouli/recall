@@ -156,6 +156,25 @@ describe('transcribeWavFile', () => {
     });
   });
 
+  it('can send the same text-first audio request to the Flash-Lite benchmark model', async () => {
+    const create = vi.fn().mockResolvedValue({ output_text: 'Flash-Lite transcript.' });
+    const ai = {
+      files: { upload: vi.fn(), delete: vi.fn() },
+      interactions: { create },
+    } as unknown as GoogleGenAI;
+    const gateway = createGeminiTranscriptionGateway(ai);
+
+    await gateway.understand('https://files.example/audio', 'audio/wav', 'transcribe exactly', 'gemini-3.5-flash-lite');
+
+    expect(create).toHaveBeenCalledWith({
+      model: 'gemini-3.5-flash-lite',
+      input: [
+        { type: 'text', text: 'transcribe exactly' },
+        { type: 'audio', uri: 'https://files.example/audio', mime_type: 'audio/wav' },
+      ],
+    });
+  });
+
   it('preserves safe diagnostics for an audio-understanding provider failure', async () => {
     const providerError = Object.assign(
       new Error('429 quota exceeded at https://generativelanguage.googleapis.com/v1beta/interactions?key=secret'),

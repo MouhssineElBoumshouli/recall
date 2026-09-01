@@ -2,6 +2,7 @@ export type BenchmarkBackendId =
   | 'gemini-transcribe'
   | 'chirp-3-ar-MA'
   | 'gemini-audio-understanding'
+  | 'gemini-flash-lite'
   | 'reconciled';
 
 export type BenchmarkResultStatus = 'pending' | 'running' | 'succeeded' | 'failed';
@@ -57,6 +58,12 @@ export const BENCHMARK_BACKEND_DEFINITIONS: readonly (
     id: 'gemini-audio-understanding',
     label: 'GEMINI AUDIO UNDERSTANDING · C',
     model: 'gemini-3.7-flash',
+    languageConfiguration: 'prompt-guided multilingual transcription',
+  },
+  {
+    id: 'gemini-flash-lite',
+    label: 'GEMINI FLASH-LITE · C2',
+    model: 'gemini-3.5-flash-lite',
     languageConfiguration: 'prompt-guided multilingual transcription',
   },
   {

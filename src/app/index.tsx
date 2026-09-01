@@ -322,7 +322,7 @@ function StoppedScreen({
           <SectionLabel>BACKEND COMPARISON</SectionLabel>
           <Text style={styles.segmentCount}>{benchmark.status}</Text>
         </View>
-        {(['gemini-transcribe', 'chirp-3-ar-MA', 'gemini-audio-understanding'] as const).map((id) => {
+        {(['gemini-transcribe', 'chirp-3-ar-MA', 'gemini-audio-understanding', 'gemini-flash-lite'] as const).map((id) => {
           const result = benchmark.results[id];
           return result ? <BenchmarkOutput key={id} result={result} /> : null;
         })}

@@ -28,9 +28,10 @@ Status date: 2026-09-01
 - Added a separate mobile refinement client/state path. The captured screen appears without waiting for refinement and preserves live transcript, local audio, and refinement failure independently.
 - Added a temporary dual-output display for `LIVE TRANSCRIPT` and `REFINED TRANSCRIPT`, with non-destructive retry after a refinement failure.
 - Added hardware-independent tests for refinement transitions, distinct live/refined output, client upload/error behavior, WAV validation, Gemini gateway cleanup, and the no-client-credential boundary.
-- Added the Phase 0.6 benchmark boundary: one saved WAV request produces independent A/B/C backend results without replacing the live transcript.
+- Added the Phase 0.6 benchmark boundary: one saved WAV request produces independent A/B/C/C2 backend results without replacing the live transcript.
 - Added optional Cloud Speech-to-Text V2 Chirp 3 adapter using `chirp_3`, `ar-MA`, regional V2 `Recognize`, and server-side Application Default Credentials.
 - Added Gemini audio-understanding adapter using `gemini-3.7-flash` with a strict no-translation/no-summary Moroccan code-switching transcription instruction.
+- Added temporary Gemini Flash-Lite audio-understanding adapter using `gemini-3.5-flash-lite` with the same strict transcription instruction after its server-side text-only and audio controls succeeded.
 - Added opt-in-only reconciliation D using the shared Gemini File and candidate outputs; it is disabled by default and does not run unless explicitly enabled.
 - Added temporary benchmark output sections showing model, language configuration, status, raw transcript, and processing time independently for each backend.
 - Added independent benchmark orchestration and state tests, including provider failure isolation, shared Gemini upload cleanup, Cloud configuration failure, and reconciliation gating.
@@ -76,6 +77,7 @@ mobile saved WAV → server /benchmark → temporary local WAV
                   ├── Gemini File → gemini-3.5-transcribe (A)
                   ├── raw WAV → Cloud Speech-to-Text V2 Recognize, chirp_3 + ar-MA (B)
                   ├── same Gemini File → gemini-3.7-flash audio understanding (C)
+                  ├── same Gemini File → gemini-3.5-flash-lite audio understanding (C2)
                   └── same Gemini File + A/B/C candidates → optional reconciliation (D)
 ```
 
@@ -95,8 +97,8 @@ mobile saved WAV → server /benchmark → temporary local WAV
 12. The server attempts to delete the temporary Gemini File resource after success or failure. If that remote deletion fails, it logs only a generic cleanup error and the resource follows Gemini's service lifecycle; the server's local copy is still removed.
 13. Phase 0.6 keeps the Phase 0.5 Gemini Transcribe adapter/configuration as baseline A and adds Cloud and audio-understanding adapters beside it rather than replacing it.
 14. Chirp 3 uses Cloud Speech-to-Text V2 `Recognize` with `model: 'chirp_3'`, `languageCodes: ['ar-MA']`, `autoDecodingConfig: {}`, the `us` regional endpoint by default, and ADC. Project/billing/API/auth setup is intentionally external to the mobile app.
-15. Gemini A, C, and optional D reuse a single uploaded Gemini File per benchmark request. The server deletes that remote file best-effort and always removes its local temporary directory.
-16. Reconciliation is disabled by default and is only attempted when explicitly enabled after A, B, and C have all independently succeeded. No automatic script normalization, translation, scoring, or reference correction is performed.
+15. Gemini A, C, C2, and optional D reuse a single uploaded Gemini File per benchmark request. The server deletes that remote file best-effort and always removes its local temporary directory.
+16. Reconciliation is disabled by default and is only attempted when explicitly enabled after A, B, and C have all independently succeeded. C2 is a separate comparison result and does not silently replace C. No automatic script normalization, translation, scoring, or reference correction is performed.
 
 ## Validation status
 
@@ -104,16 +106,16 @@ Passed in the current workspace:
 
 - `npm run typecheck`
 - `npm run server:check`
-- `npm test` — 13 files, 61 tests
+- `npm test` — 13 files, 65 tests
 - `npm run lint`
-- `npx expo-doctor` — 17/18 checks; the remaining warning is that the intentionally committed native project contains app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
+- `npx expo-doctor` — 16/18 checks; the existing warnings are the intentionally committed native project containing app.json Prebuild-managed fields and patch-version mismatches in the Expo SDK 57 dependency set.
 - `npx expo prebuild --no-install` — Android native project generated
 - Generated Android manifest contains `android.permission.RECORD_AUDIO`.
 - Phase 0 physical result — Test B English passed with live interim/final transcription.
 - Phase 0 physical result — Test C French passed.
 - Phase 0 physical result — Test D English/French code-switching passed.
 - Phase 0 physical result — Darija/French/English code-switching was partially successful and inconsistent: Darija sometimes omitted words or changed script, while English/French/Spanish switching was substantially more reliable.
-- Phase 0.5/0.6 static result — `npm run typecheck`, `npm run server:check`, `npm test` (13 files, 61 tests), and `npm run lint` passed. `npx expo-doctor` reports 17/18 checks passed; its existing warning is the committed native project containing app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
+- Phase 0.5/0.6 static result — `npm run typecheck`, `npm run server:check`, `npm test` (13 files, 65 tests), and `npm run lint` passed. `npx expo-doctor` reports 16/18 checks passed; its existing warnings are the committed native project containing app.json Prebuild-managed fields and patch-version mismatches in the Expo SDK 57 dependency set.
 
 Runtime verification attempted on Windows:
 
@@ -181,15 +183,16 @@ Not yet validated here:
 - There is no local session database, playback control, transcript export, or durable refinement history.
 - The current UI is a Phase 0 validation surface, not the final Recall navigation or accessibility pass.
 - Phase 0.5 refinement has now been benchmarked on one physical natural Darija/French/English sample, with meaningful but insufficient Darija improvement. Results remain current-session only.
-- Phase 0.6 benchmark results are current-session only; A/B/C remain raw independent outputs, and D is opt-in experimental only.
+- Phase 0.6 benchmark results are current-session only; A/B/C/C2 remain raw independent outputs, and D is opt-in experimental only.
 - The first Phase 0.6 C control matrix could not evaluate audio understanding because the configured Gemini account returned HTTP 429 free-tier quota exhaustion for `gemini-3.7-flash` on text-only, File URI, inline-audio, SDK, and raw REST requests. Restore eligible quota or billing/access before attempting another C benchmark; do not treat this as a Darija-quality result.
+- Phase 0.6 C2 control — `gemini-3.5-flash-lite` text-only invocation succeeded, a temporary Gemini File upload succeeded, and the same strict Darija/French/English audio request succeeded. The output was intentionally not printed or benchmarked for quality during this control.
 - Chirp 3 cannot be considered tested until a Cloud project, billing, Speech-to-Text API V2, and ADC are configured. The official Cloud documentation lists Moroccan Arabic `ar-MA` for Chirp 3 as Preview.
 - The local `/transcribe` endpoint is intentionally unauthenticated and accepts raw audio only for this development spike. It must not be exposed beyond the trusted development network.
 
 ## Exact next steps
 
 1. If Chirp 3 is required, enable Cloud Speech-to-Text V2, billing, and ADC as documented in `README.md`, set the local server variables, and restart the server.
-2. After `gemini-3.7-flash` quota/access is restored, reload the existing Android development build through Metro and run one fresh 20–30 second natural Darija/French/English sample to compare LIVE, A, B, and C without normalization. No new sample is useful for C while the account remains quota-blocked.
+2. After Gemini 3.7 Flash quota/access is restored, reload the existing Android development build through Metro and run one fresh 20–30 second natural Darija/French/English sample to compare LIVE, A, B, C, and C2 without normalization. C2 is now available for comparison, but no new sample is needed until the next benchmark run is desired.
 3. Record duration, date, local WAV URI, backend/model/configuration, raw output, status, and processing time for each result. Add a manually corrected REFERENCE only later; do not score automatically yet.
 4. Leave D disabled until A, B, and C have each succeeded independently on real samples.
 5. Keep real 8.5-minute rotation and iOS verification as later Phase 0 validation work; do not treat this benchmark as a broader product milestone.

@@ -1,6 +1,7 @@
 import {
   DARIIJA_TRANSCRIPTION_INSTRUCTION,
   GEMINI_AUDIO_UNDERSTANDING_MODEL,
+  GEMINI_FLASH_LITE_MODEL,
   NON_LIVE_TRANSCRIPTION_MODEL,
   WAV_MIME_TYPE,
   createGeminiInteractionDiagnostic,
@@ -48,6 +49,12 @@ const DEFINITIONS: Record<BenchmarkBackendId, BenchmarkDefinition> = {
     id: 'gemini-audio-understanding',
     label: 'GEMINI AUDIO UNDERSTANDING · C',
     model: GEMINI_AUDIO_UNDERSTANDING_MODEL,
+    languageConfiguration: 'prompt-guided multilingual transcription',
+  },
+  'gemini-flash-lite': {
+    id: 'gemini-flash-lite',
+    label: 'GEMINI FLASH-LITE · C2',
+    model: GEMINI_FLASH_LITE_MODEL,
     languageConfiguration: 'prompt-guided multilingual transcription',
   },
   reconciled: {
@@ -107,10 +114,12 @@ async function runGeminiTranscribe(
 async function runGeminiAudioUnderstanding(
   gateway: GeminiTranscriptionGateway,
   uploadedFile: UploadedAudioFile | null,
+  id: 'gemini-audio-understanding' | 'gemini-flash-lite',
+  model: string,
 ): Promise<BenchmarkBackendResult> {
   const startedAt = Date.now();
   if (!uploadedFile?.uri) {
-    return failed('gemini-audio-understanding', 'Gemini File upload failed.');
+    return failed(id, 'Gemini File upload failed.');
   }
 
   try {
@@ -118,13 +127,14 @@ async function runGeminiAudioUnderstanding(
       uploadedFile.uri,
       uploadedFile.mimeType || WAV_MIME_TYPE,
       DARIIJA_TRANSCRIPTION_INSTRUCTION,
+      model,
     );
-    return succeeded('gemini-audio-understanding', text, Date.now() - startedAt);
+    return succeeded(id, text, Date.now() - startedAt);
   } catch (error) {
     if (error instanceof GeminiInteractionError) {
-      console.error('[benchmark] audio-understanding failed', JSON.stringify(error.diagnostic));
+      console.error(`[benchmark] ${id} failed`, JSON.stringify(error.diagnostic));
       return failed(
-        'gemini-audio-understanding',
+        id,
         'Gemini audio-understanding transcription failed.',
         Date.now() - startedAt,
         {
@@ -140,9 +150,9 @@ async function runGeminiAudioUnderstanding(
       GEMINI_AUDIO_UNDERSTANDING_MODEL,
       'during interactions.create',
     );
-    console.error('[benchmark] audio-understanding failed', JSON.stringify(diagnostic));
+    console.error(`[benchmark] ${id} failed`, JSON.stringify(diagnostic));
     return failed(
-      'gemini-audio-understanding',
+      id,
       'Gemini audio-understanding transcription failed.',
       Date.now() - startedAt,
       { stage: diagnostic.stage, code: diagnostic.code, status: diagnostic.status },
@@ -203,6 +213,7 @@ async function runReconciliation(
       uploadedFile.uri,
       uploadedFile.mimeType || WAV_MIME_TYPE,
       instruction,
+      GEMINI_AUDIO_UNDERSTANDING_MODEL,
     );
     return succeeded('reconciled', text, Date.now() - startedAt);
   } catch {
@@ -229,17 +240,28 @@ export async function runBenchmark(
     const independentResults = await Promise.all([
       runGeminiTranscribe(geminiGateway, uploadedFile),
       runChirp3(chirp3Gateway, filePath),
-      runGeminiAudioUnderstanding(geminiGateway, uploadedFile),
-    ]) as [BenchmarkBackendResult, BenchmarkBackendResult, BenchmarkBackendResult];
+      runGeminiAudioUnderstanding(
+        geminiGateway,
+        uploadedFile,
+        'gemini-audio-understanding',
+        GEMINI_AUDIO_UNDERSTANDING_MODEL,
+      ),
+      runGeminiAudioUnderstanding(geminiGateway, uploadedFile, 'gemini-flash-lite', GEMINI_FLASH_LITE_MODEL),
+    ]) as [BenchmarkBackendResult, BenchmarkBackendResult, BenchmarkBackendResult, BenchmarkBackendResult];
 
     const results: BenchmarkResponse['results'] = {
       'gemini-transcribe': independentResults[0],
       'chirp-3-ar-MA': independentResults[1],
       'gemini-audio-understanding': independentResults[2],
+      'gemini-flash-lite': independentResults[3],
     };
 
     if (includeReconciled) {
-      results.reconciled = await runReconciliation(geminiGateway, uploadedFile, independentResults);
+      results.reconciled = await runReconciliation(geminiGateway, uploadedFile, [
+        independentResults[0],
+        independentResults[1],
+        independentResults[2],
+      ]);
     }
 
     return { results, reconciliationEnabled: includeReconciled };

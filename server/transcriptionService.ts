@@ -25,6 +25,7 @@ export class GeminiInteractionError extends Error {
 
 export const NON_LIVE_TRANSCRIPTION_MODEL = 'gemini-3.5-transcribe';
 export const GEMINI_AUDIO_UNDERSTANDING_MODEL = 'gemini-3.7-flash';
+export const GEMINI_FLASH_LITE_MODEL = 'gemini-3.5-flash-lite';
 export const WAV_MIME_TYPE = 'audio/wav';
 
 export const DARIIJA_TRANSCRIPTION_INSTRUCTION = [
@@ -59,6 +60,7 @@ export interface GeminiTranscriptionGateway {
     fileUri: string,
     mimeType: string,
     instruction: string,
+    model?: string,
   ): Promise<string>;
   delete(fileName: string): Promise<void>;
 }
@@ -144,12 +146,12 @@ export function createGeminiTranscriptionGateway(ai: GoogleGenAI): GeminiTranscr
       return interaction.output_text ?? '';
     },
 
-    async understand(fileUri, mimeType, instruction) {
+    async understand(fileUri, mimeType, instruction, model = GEMINI_AUDIO_UNDERSTANDING_MODEL) {
       if (!fileUri || !mimeType || !instruction) {
         throw new GeminiInteractionError(
           createGeminiInteractionDiagnostic(
             new Error('Audio understanding request is missing required input.'),
-            GEMINI_AUDIO_UNDERSTANDING_MODEL,
+            model,
             'before request',
           ),
         );
@@ -158,7 +160,7 @@ export function createGeminiTranscriptionGateway(ai: GoogleGenAI): GeminiTranscr
       let interaction: { output_text?: string };
       try {
         interaction = await ai.interactions.create({
-          model: GEMINI_AUDIO_UNDERSTANDING_MODEL,
+          model,
           input: [
             { type: 'text', text: instruction },
             { type: 'audio', uri: fileUri, mime_type: mimeType },
@@ -168,7 +170,7 @@ export function createGeminiTranscriptionGateway(ai: GoogleGenAI): GeminiTranscr
         throw new GeminiInteractionError(
           createGeminiInteractionDiagnostic(
             error,
-            GEMINI_AUDIO_UNDERSTANDING_MODEL,
+            model,
             'during interactions.create',
           ),
         );
@@ -180,7 +182,7 @@ export function createGeminiTranscriptionGateway(ai: GoogleGenAI): GeminiTranscr
         throw new GeminiInteractionError(
           createGeminiInteractionDiagnostic(
             error,
-            GEMINI_AUDIO_UNDERSTANDING_MODEL,
+            model,
             'while reading output',
           ),
         );

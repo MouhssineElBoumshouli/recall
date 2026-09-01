@@ -33,6 +33,13 @@ describe('transcription benchmark orchestration', () => {
     expect(response.results['gemini-transcribe']).toMatchObject({ status: 'succeeded', text: 'Gemini A transcript' });
     expect(response.results['chirp-3-ar-MA']).toMatchObject({ status: 'succeeded', text: 'Chirp B transcript' });
     expect(response.results['gemini-audio-understanding']).toMatchObject({ status: 'succeeded', text: 'Gemini C transcript' });
+    expect(response.results['gemini-flash-lite']).toMatchObject({
+      id: 'gemini-flash-lite',
+      label: 'GEMINI FLASH-LITE · C2',
+      model: 'gemini-3.5-flash-lite',
+      status: 'succeeded',
+      text: 'Gemini C transcript',
+    });
     expect(gemini.upload).toHaveBeenCalledTimes(1);
     expect(gemini.delete).toHaveBeenCalledWith('files/benchmark');
   });
@@ -94,13 +101,57 @@ describe('transcription benchmark orchestration', () => {
     expect(response.results['chirp-3-ar-MA']).toMatchObject({ status: 'succeeded' });
   });
 
+  it('keeps C2 successful when C is rate-limited', async () => {
+    const understand: GeminiTranscriptionGateway['understand'] = vi.fn()
+      .mockImplementation((_uri, _mimeType, _instruction, model) => (
+        model === 'gemini-3.7-flash'
+          ? Promise.reject(new Error('C is unavailable'))
+          : Promise.resolve('Gemini C2 transcript')
+      ));
+    const { gemini, chirp } = gateways({ understand });
+
+    const response = await runBenchmark(gemini, chirp, 'temporary.wav');
+
+    expect(response.results['gemini-audio-understanding']).toMatchObject({ status: 'failed' });
+    expect(response.results['gemini-flash-lite']).toMatchObject({ status: 'succeeded', text: 'Gemini C2 transcript' });
+    expect(response.results['gemini-transcribe']).toMatchObject({ status: 'succeeded' });
+  });
+
+  it('keeps C successful when C2 fails', async () => {
+    const understand: GeminiTranscriptionGateway['understand'] = vi.fn()
+      .mockImplementation((_uri, _mimeType, _instruction, model) => (
+        model === 'gemini-3.5-flash-lite'
+          ? Promise.reject(new Error('C2 is unavailable'))
+          : Promise.resolve('Gemini C transcript')
+      ));
+    const { gemini, chirp } = gateways({ understand });
+
+    const response = await runBenchmark(gemini, chirp, 'temporary.wav');
+
+    expect(response.results['gemini-audio-understanding']).toMatchObject({ status: 'succeeded', text: 'Gemini C transcript' });
+    expect(response.results['gemini-flash-lite']).toMatchObject({ status: 'failed' });
+    expect(response.results['gemini-transcribe']).toMatchObject({ status: 'succeeded' });
+  });
+
+  it('keeps A successful when both audio-understanding backends fail', async () => {
+    const { gemini, chirp } = gateways({
+      understand: vi.fn().mockRejectedValue(new Error('audio understanding unavailable')),
+    });
+
+    const response = await runBenchmark(gemini, chirp, 'temporary.wav');
+
+    expect(response.results['gemini-transcribe']).toMatchObject({ status: 'succeeded', text: 'Gemini A transcript' });
+    expect(response.results['gemini-audio-understanding']).toMatchObject({ status: 'failed' });
+    expect(response.results['gemini-flash-lite']).toMatchObject({ status: 'failed' });
+  });
+
   it('does not run reconciliation unless explicitly enabled', async () => {
     const { gemini, chirp } = gateways();
 
     const response = await runBenchmark(gemini, chirp, 'temporary.wav');
 
     expect(response.results.reconciled).toBeUndefined();
-    expect(gemini.understand).toHaveBeenCalledTimes(1);
+    expect(gemini.understand).toHaveBeenCalledTimes(2);
   });
 
   it('runs reconciliation only after A, B, and C succeed and reuses the Gemini File', async () => {
@@ -109,7 +160,7 @@ describe('transcription benchmark orchestration', () => {
     const response = await runBenchmark(gemini, chirp, 'temporary.wav', { includeReconciled: true });
 
     expect(response.results.reconciled).toMatchObject({ status: 'succeeded' });
-    expect(gemini.understand).toHaveBeenCalledTimes(2);
+    expect(gemini.understand).toHaveBeenCalledTimes(3);
     expect(gemini.delete).toHaveBeenCalledTimes(1);
   });
 
