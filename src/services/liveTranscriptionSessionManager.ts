@@ -130,6 +130,16 @@ export class LiveTranscriptionSessionManager {
 
   private audioStreamEndSent = false;
 
+  private tokenFetched = false;
+
+  private setupMessageSent = false;
+
+  private setupTimedOut = false;
+
+  private socketErrorCount = 0;
+
+  private lastServerMessageDataType: string | null = null;
+
   private lastCloseCode: number | null = null;
 
   private lastCloseReason: string | null = null;
@@ -171,6 +181,11 @@ export class LiveTranscriptionSessionManager {
     this.finalTranscriptEvents = 0;
     this.turnCompleteReceived = false;
     this.audioStreamEndSent = false;
+    this.tokenFetched = false;
+    this.setupMessageSent = false;
+    this.setupTimedOut = false;
+    this.socketErrorCount = 0;
+    this.lastServerMessageDataType = null;
     this.lastCloseCode = null;
     this.lastCloseReason = null;
     this.lastError = null;
@@ -267,6 +282,11 @@ export class LiveTranscriptionSessionManager {
       finalTranscriptEvents: this.finalTranscriptEvents,
       turnCompleteReceived: this.turnCompleteReceived,
       audioStreamEndSent: this.audioStreamEndSent,
+      tokenFetched: this.tokenFetched,
+      setupMessageSent: this.setupMessageSent,
+      setupTimedOut: this.setupTimedOut,
+      socketErrorCount: this.socketErrorCount,
+      lastServerMessageDataType: this.lastServerMessageDataType,
       lastCloseCode: this.lastCloseCode,
       lastCloseReason: this.lastCloseReason,
       lastError: this.lastError,
@@ -291,6 +311,7 @@ export class LiveTranscriptionSessionManager {
 
     try {
       const { token } = await this.tokenProvider.getToken();
+      this.handleDiagnostic({ type: 'tokenFetched' });
       if (!this.running) {
         return;
       }
@@ -488,6 +509,19 @@ export class LiveTranscriptionSessionManager {
         break;
       case 'serverMessageReceived':
         this.serverMessagesReceived += 1;
+        this.lastServerMessageDataType = event.dataType;
+        break;
+      case 'tokenFetched':
+        this.tokenFetched = true;
+        break;
+      case 'setupSent':
+        this.setupMessageSent = true;
+        break;
+      case 'setupTimeout':
+        this.setupTimedOut = true;
+        break;
+      case 'socketError':
+        this.socketErrorCount += 1;
         break;
       case 'audioChunkSent':
         this.audioChunksSent += 1;

@@ -10,10 +10,16 @@ export interface LiveTranscriptEvent {
   sourceId?: string;
 }
 
+export type GeminiLiveMessageDataType = 'text' | 'arrayBuffer' | 'blob' | 'other';
+
 export type GeminiLiveDiagnosticEvent =
   | { type: 'socketOpened' }
   | { type: 'setupComplete' }
-  | { type: 'serverMessageReceived' }
+  | { type: 'serverMessageReceived'; dataType: GeminiLiveMessageDataType }
+  | { type: 'tokenFetched' }
+  | { type: 'setupSent' }
+  | { type: 'setupTimeout' }
+  | { type: 'socketError' }
   | { type: 'audioChunkSent' }
   | { type: 'interimTranscript' }
   | { type: 'finalTranscript' }
@@ -108,6 +114,38 @@ function isSetupCompleteMessage(message: GeminiServerMessage): boolean {
   return typeof message.setupComplete === 'object' && message.setupComplete !== null;
 }
 
+function getMessageDataType(data: unknown): GeminiLiveMessageDataType {
+  if (typeof data === 'string') {
+    return 'text';
+  }
+  if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+    return 'arrayBuffer';
+  }
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    return 'blob';
+  }
+  return 'other';
+}
+
+async function decodeMessageData(data: unknown): Promise<string | null> {
+  if (typeof data === 'string') {
+    return data;
+  }
+
+  const decoder = (globalThis as typeof globalThis & { TextDecoder?: typeof TextDecoder }).TextDecoder;
+  if (data instanceof ArrayBuffer) {
+    return decoder ? new decoder().decode(new Uint8Array(data)) : null;
+  }
+  if (ArrayBuffer.isView(data)) {
+    const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    return decoder ? new decoder().decode(bytes) : null;
+  }
+  if (typeof Blob !== 'undefined' && data instanceof Blob) {
+    return data.text();
+  }
+  return null;
+}
+
 export class GeminiLiveTranscription implements GeminiLiveConnection {
   private socket: WebSocket | null = null;
 
@@ -148,6 +186,7 @@ export class GeminiLiveTranscription implements GeminiLiveConnection {
         failureReported = true;
         settled = true;
         clearTimeout(timeout);
+        this.callbacks.onDiagnostic?.({ type: 'setupTimeout' });
         this.callbacks.onError(error);
         this.socket?.close();
         reject(error);
@@ -170,6 +209,7 @@ export class GeminiLiveTranscription implements GeminiLiveConnection {
                 },
               }),
             );
+            this.callbacks.onDiagnostic?.({ type: 'setupSent' });
           } catch (error) {
             clearTimeout(timeout);
             settled = true;
@@ -181,46 +221,23 @@ export class GeminiLiveTranscription implements GeminiLiveConnection {
         };
 
         socket.onmessage = (event) => {
-          if (typeof event.data !== 'string') {
-            return;
-          }
-
-          this.callbacks.onDiagnostic?.({ type: 'serverMessageReceived' });
-          const message = parseServerMessage(event.data);
-          if (!message) {
-            return;
-          }
-
-          if (isSetupCompleteMessage(message) && !this.setupComplete) {
+          const dataType = getMessageDataType(event.data);
+          this.callbacks.onDiagnostic?.({ type: 'serverMessageReceived', dataType });
+          void this.handleMessageData(event.data, () => {
+            if (settled || this.setupComplete) {
+              return;
+            }
             this.setupComplete = true;
             clearTimeout(timeout);
             settled = true;
             this.callbacks.onDiagnostic?.({ type: 'setupComplete' });
             this.callbacks.onOpen();
             resolve();
-          }
-
-          const transcripts = parseTranscriptPayloads(message);
-          let finalTranscriptReceived = false;
-          for (const transcript of transcripts) {
-            this.callbacks.onDiagnostic?.({
-              type: transcript.kind === 'final' ? 'finalTranscript' : 'interimTranscript',
-            });
-            this.callbacks.onTranscript(transcript);
-            finalTranscriptReceived ||= transcript.kind === 'final';
-          }
-
-          if (message.serverContent?.turnComplete === true) {
-            this.markTurnComplete();
-          } else if (this.turnCompleteSeen && finalTranscriptReceived) {
-            // The protocol does not guarantee ordering between turnComplete and
-            // the final transcription payload. Give a late final event a short
-            // drain window before resolving graceful shutdown.
-            this.scheduleTurnCompleteDrain();
-          }
+          });
         };
 
         socket.onerror = () => {
+          this.callbacks.onDiagnostic?.({ type: 'socketError' });
           if (failureReported) {
             return;
           }
@@ -267,6 +284,46 @@ export class GeminiLiveTranscription implements GeminiLiveConnection {
         reject(normalized);
       }
     });
+  }
+
+  private async handleMessageData(data: unknown, onSetupComplete: () => void): Promise<void> {
+    let raw: string | null;
+    try {
+      raw = await decodeMessageData(data);
+    } catch {
+      raw = null;
+    }
+    if (!raw) {
+      return;
+    }
+
+    const message = parseServerMessage(raw);
+    if (!message) {
+      return;
+    }
+
+    if (isSetupCompleteMessage(message) && !this.setupComplete) {
+      onSetupComplete();
+    }
+
+    const transcripts = parseTranscriptPayloads(message);
+    let finalTranscriptReceived = false;
+    for (const transcript of transcripts) {
+      this.callbacks.onDiagnostic?.({
+        type: transcript.kind === 'final' ? 'finalTranscript' : 'interimTranscript',
+      });
+      this.callbacks.onTranscript(transcript);
+      finalTranscriptReceived ||= transcript.kind === 'final';
+    }
+
+    if (message.serverContent?.turnComplete === true) {
+      this.markTurnComplete();
+    } else if (this.turnCompleteSeen && finalTranscriptReceived) {
+      // The protocol does not guarantee ordering between turnComplete and
+      // the final transcription payload. Give a late final event a short
+      // drain window before resolving graceful shutdown.
+      this.scheduleTurnCompleteDrain();
+    }
   }
 
   public sendAudio(audioBase64: string): void {

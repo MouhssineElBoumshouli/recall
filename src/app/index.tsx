@@ -279,9 +279,15 @@ function StoppedScreen({
           {debug.serverMessagesReceived} server messages
         </Text>
         <Text style={styles.debugText}>
+          {debug.tokenFetched ? 'token fetched' : 'token not fetched'} ·{' '}
+          {debug.setupMessageSent ? 'setup sent' : 'setup not sent'} ·{' '}
+          {debug.setupTimedOut ? 'setup timeout' : 'no setup timeout'} · {debug.socketErrorCount} socket errors
+        </Text>
+        <Text style={styles.debugText}>
           {debug.interimTranscriptEvents} interim · {debug.finalTranscriptEvents} final ·{' '}
           {debug.turnCompleteReceived ? 'turn complete received' : 'turn incomplete'} ·{' '}
-          {debug.audioStreamEndSent ? 'audio end sent' : 'audio end not sent'}
+          {debug.audioStreamEndSent ? 'audio end sent' : 'audio end not sent'} ·{' '}
+          {debug.lastServerMessageDataType || 'no server message type'}
         </Text>
         {debug.lastCloseCode !== null && (
           <Text style={styles.debugText}>

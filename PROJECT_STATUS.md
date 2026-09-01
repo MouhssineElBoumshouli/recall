@@ -60,7 +60,7 @@ Passed in the current workspace:
 
 - `npm run typecheck`
 - `npm run server:check`
-- `npm test` — 6 files, 19 tests
+- `npm test` — 6 files, 20 tests
 - `npm run lint`
 - `npx expo-doctor` — 17/18 checks; the remaining warning is that the intentionally committed native project contains app.json Prebuild-managed fields that must be synchronized by running Prebuild in a native build pipeline.
 - `npx expo prebuild --no-install` — Android native project generated
@@ -88,6 +88,8 @@ Runtime verification update — physical Android device:
 - Test A — PASSED on the physical device. Microphone permission was granted, recording ran for `00:10`, one bookmark was created, stopping produced the local URI `file:/data/user/0/com.mouhssineee.recall/files/4f244962-71b0-474b-939d-7d0c8e4d3208.wav`, and the stopped screen reported 43 live-transcription chunks dropped while unavailable. `adb` verified the file exists and is 321,964 bytes. The first 44 bytes are a consistent RIFF/WAVE PCM header: mono, 16,000 Hz, 16-bit, with matching data length. This validates local recording independently of Gemini.
 - Test B — FAILED on the physical device before this protocol hardening pass. Local recording ran for approximately seven seconds with generation 1, zero reconnect attempts, zero dropped chunks, and zero finalized transcript segments. The failure was consistent with the client treating WebSocket `onopen` as Gemini readiness, allowing the manager to send audio before the server's `setupComplete` response. The prior parser could also discard a final transcription when the same message contained both interim and final fields, and shutdown used a fixed 350 ms sleep rather than a protocol completion signal.
 - Gemini Live protocol hardening is now implemented: the connection resolves only after `setupComplete`, audio is gated until setup, current camelCase interim/final fields are emitted independently, and stop/rotation send `audioStreamEnd` then wait for `turnComplete` with a bounded timeout and a short late-final drain.
+- Controlled handshake diagnosis — `@google/genai` 2.19.0's installed source selects `BidiGenerateContentConstrained` for `auth_tokens/...` credentials and documents its ephemeral-token support as `v1alpha` only. Current Google documentation describes raw ephemeral-token connections on `v1beta`; fresh minimal-token official-SDK connections succeeded on both versions, as did raw Node WebSocket connections on both versions. A token issued by the existing server, including `lockAdditionalFields`, also completed setup successfully. No API-version or token-configuration change was justified.
+- React Native handshake diagnosis — a temporary development-only app probe completed the direct mobile handshake without audio and recorded `socketOpened=true`, `setupSent=true`, `setupComplete=true`, one server message, and `arrayBuffer` as the message data type. The prior adapter discarded non-string WebSocket frames before counting or parsing them. The adapter now decodes supported text, `ArrayBuffer`, and `Blob` frames and records token/setup/timeout/message-type diagnostics. The disposable probe was removed and is not committed.
 - Tests C–F have not yet been run. Full physical-device retesting remains pending after the development build reload.
 
 Version control:
@@ -118,7 +120,7 @@ Not yet validated here:
 
 ## Exact next steps
 
-1. Reload the existing Android development build and repeat Test B against the hardened Gemini Live handshake.
+1. Reload the existing Android development build and repeat Test B against the hardened React Native WebSocket frame handling.
 2. If Test B passes, verify Tests C–F on the physical device, including the non-destructive transcription-unavailable case.
 3. Upgrade Node to a supported 22.x patch if native build tooling reports engine problems.
 4. On macOS, build and verify the equivalent iOS development client and permission flow.

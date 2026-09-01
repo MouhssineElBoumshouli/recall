@@ -39,7 +39,7 @@ class FakeWebSocket {
     this.onopen?.({} as Event);
   }
 
-  public emitMessage(data: string): void {
+  public emitMessage(data: unknown): void {
     this.onmessage?.({ data } as MessageEvent);
   }
 
@@ -150,6 +150,7 @@ describe('Gemini Live connection lifecycle', () => {
     expect(resolved).toBe(false);
     expect(callbacks.onOpen).not.toHaveBeenCalled();
     expect(socket.sent).toHaveLength(1);
+    expect(callbacks.onDiagnostic).toHaveBeenCalledWith({ type: 'setupSent' });
     expect(JSON.parse(socket.sent[0])).toMatchObject({ setup: { model: 'models/gemini-3.5-transcribe-live' } });
 
     socket.emitMessage(JSON.stringify({ setupComplete: {} }));
@@ -158,6 +159,25 @@ describe('Gemini Live connection lifecycle', () => {
     expect(resolved).toBe(true);
     expect(callbacks.onOpen).toHaveBeenCalledOnce();
     expect(callbacks.onDiagnostic).toHaveBeenCalledWith({ type: 'setupComplete' });
+    connection.close();
+  });
+
+  it('decodes an ArrayBuffer server message before checking the setup response', async () => {
+    const callbacks = createCallbacks();
+    const connection = new GeminiLiveTranscription('ephemeral-test-token', callbacks, 1_000);
+    const connectPromise = connection.connect();
+    const socket = sockets[0];
+
+    socket.emitOpen();
+    const setupBytes = new TextEncoder().encode(JSON.stringify({ setupComplete: {} }));
+    socket.emitMessage(setupBytes.buffer);
+    await connectPromise;
+
+    expect(callbacks.onOpen).toHaveBeenCalledOnce();
+    expect(callbacks.onDiagnostic).toHaveBeenCalledWith({
+      type: 'serverMessageReceived',
+      dataType: 'arrayBuffer',
+    });
     connection.close();
   });
 

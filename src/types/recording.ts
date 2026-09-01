@@ -20,6 +20,11 @@ export interface RecordingDebugInfo {
   finalTranscriptEvents: number;
   turnCompleteReceived: boolean;
   audioStreamEndSent: boolean;
+  tokenFetched: boolean;
+  setupMessageSent: boolean;
+  setupTimedOut: boolean;
+  socketErrorCount: number;
+  lastServerMessageDataType: string | null;
   lastCloseCode: number | null;
   lastCloseReason: string | null;
   lastError: string | null;
