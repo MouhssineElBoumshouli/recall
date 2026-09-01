@@ -8,13 +8,14 @@ import {
 import { BENCHMARK_BACKEND_DEFINITIONS } from '@/types/benchmark';
 
 describe('benchmark state', () => {
-  it('starts A, B, and C independently in a running state', () => {
+  it('starts A, B, C, and D2 independently in a running state', () => {
     const state = benchmarkStarted();
 
     expect(state.status).toBe('running');
     expect(state.results['gemini-transcribe']?.status).toBe('running');
     expect(state.results['chirp-3-ar-MA']?.status).toBe('running');
     expect(state.results['gemini-audio-understanding']?.status).toBe('running');
+    expect(state.results['transcript-repair']?.status).toBe('running');
     expect(state.results.reconciled).toBeUndefined();
   });
 

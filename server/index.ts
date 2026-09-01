@@ -17,6 +17,7 @@ import {
   normalizeContentType,
   validateWavRequest,
 } from './wavValidation.js';
+import type { TranscriptLanguageContext } from '../src/types/languageContext.js';
 
 config();
 
@@ -26,6 +27,13 @@ const model = 'gemini-3.5-transcribe-live';
 const cloudProjectId = process.env.GOOGLE_CLOUD_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT;
 const cloudLocation = process.env.GOOGLE_CLOUD_SPEECH_LOCATION || 'us';
 const reconciliationEnabled = process.env.RECALL_ENABLE_RECONCILIATION === 'true';
+const benchmarkLanguageContext: TranscriptLanguageContext = process.env.RECALL_BENCHMARK_LANGUAGE_MODE === 'auto'
+  ? { preserveCodeSwitching: true }
+  : {
+      likelyLanguages: ['Moroccan Darija', 'French', 'English'],
+      localeHints: ['Morocco'],
+      preserveCodeSwitching: true,
+    };
 class RequestBodyTooLargeError extends Error {}
 
 function sendJson(response: import('node:http').ServerResponse, status: number, body: unknown) {
@@ -242,6 +250,7 @@ if (!apiKey) {
         await writeFile(temporaryFile, audio);
         const result = await runBenchmark(transcriptionGateway, chirp3Gateway, temporaryFile, {
           includeReconciled: reconciliationEnabled,
+          transcriptLanguageContext: benchmarkLanguageContext,
         });
         sendJson(response, 200, result);
       } catch (error) {

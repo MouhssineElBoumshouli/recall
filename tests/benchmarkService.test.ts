@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { runBenchmark } from '../server/benchmarkService';
-import { GeminiInteractionError } from '../server/transcriptionService';
+import { buildTranscriptRepairInstruction, GeminiInteractionError } from '../server/transcriptionService';
 import type { GeminiTranscriptionGateway } from '../server/transcriptionService';
 import type { Chirp3TranscriptionGateway } from '../server/chirp3TranscriptionService';
 
@@ -14,6 +14,7 @@ function gateways(overrides: Partial<GeminiTranscriptionGateway> = {}): {
       upload: vi.fn().mockResolvedValue({ name: 'files/benchmark', uri: 'https://files.example/benchmark', mimeType: 'audio/wav' }),
       transcribe: vi.fn().mockResolvedValue('Gemini A transcript'),
       understand: vi.fn().mockResolvedValue('Gemini C transcript'),
+      repair: vi.fn().mockResolvedValue('Repaired transcript'),
       delete: vi.fn().mockResolvedValue(undefined),
       ...overrides,
     },
@@ -24,7 +25,7 @@ function gateways(overrides: Partial<GeminiTranscriptionGateway> = {}): {
 }
 
 describe('transcription benchmark orchestration', () => {
-  it('returns independent A, B, and C results while sharing one Gemini upload', async () => {
+  it('returns independent A, B, C, and D2 results while sharing one Gemini upload', async () => {
     const { gemini, chirp } = gateways();
 
     const response = await runBenchmark(gemini, chirp, 'temporary.wav');
@@ -39,6 +40,14 @@ describe('transcription benchmark orchestration', () => {
       model: 'gemini-3.5-flash-lite',
       status: 'succeeded',
       text: 'Gemini C transcript',
+    });
+    expect(response.results['transcript-repair']).toMatchObject({
+      id: 'transcript-repair',
+      label: 'AUDIO-GROUNDED REPAIR · D2',
+      model: 'gemini-3.5-flash-lite',
+      languageConfiguration: 'AUTO LANGUAGE CONTEXT',
+      status: 'succeeded',
+      text: 'Repaired transcript',
     });
     expect(gemini.upload).toHaveBeenCalledTimes(1);
     expect(gemini.delete).toHaveBeenCalledWith('files/benchmark');
@@ -143,6 +152,127 @@ describe('transcription benchmark orchestration', () => {
     expect(response.results['gemini-transcribe']).toMatchObject({ status: 'succeeded', text: 'Gemini A transcript' });
     expect(response.results['gemini-audio-understanding']).toMatchObject({ status: 'failed' });
     expect(response.results['gemini-flash-lite']).toMatchObject({ status: 'failed' });
+  });
+
+  it('uses only successful A and the original audio as D2 inputs, never C2', async () => {
+    const repair = vi.fn().mockResolvedValue('Repaired from A');
+    const { gemini } = gateways({ repair });
+
+    await runBenchmark(gemini, null, 'temporary.wav', {
+      transcriptLanguageContext: {
+        likelyLanguages: ['Spanish', 'English'],
+        localeHints: ['United States'],
+      },
+    });
+
+    expect(repair).toHaveBeenCalledWith(
+      'https://files.example/benchmark',
+      'audio/wav',
+      'Gemini A transcript',
+      {
+        likelyLanguages: ['Spanish', 'English'],
+        localeHints: ['United States'],
+      },
+    );
+    expect(repair.mock.calls[0]?.[2]).not.toBe('Gemini C transcript');
+  });
+
+  it('runs D2 with advisory optional language context', async () => {
+    const { gemini } = gateways();
+
+    const response = await runBenchmark(gemini, null, 'temporary.wav', {
+      transcriptLanguageContext: {
+        likelyLanguages: ['Moroccan Darija', 'French', 'English'],
+        localeHints: ['Morocco'],
+        preserveCodeSwitching: true,
+      },
+    });
+
+    expect(response.results['transcript-repair']).toMatchObject({
+      status: 'succeeded',
+      languageConfiguration: 'HINTED: Moroccan Darija · French · English · locale: Morocco',
+    });
+  });
+
+  it('does not run D2 when A fails', async () => {
+    const repair = vi.fn().mockResolvedValue('Should not run');
+    const { gemini } = gateways({
+      transcribe: vi.fn().mockRejectedValue(new Error('A unavailable')),
+      repair,
+    });
+
+    const response = await runBenchmark(gemini, null, 'temporary.wav');
+
+    expect(response.results['gemini-transcribe']).toMatchObject({ status: 'failed' });
+    expect(response.results['transcript-repair']).toMatchObject({
+      status: 'failed',
+      error: 'D2 requires a successful Gemini Transcribe result from A.',
+    });
+    expect(repair).not.toHaveBeenCalled();
+  });
+
+  it('keeps A successful when D2 fails', async () => {
+    const { gemini } = gateways({
+      repair: vi.fn().mockRejectedValue(new Error('D2 unavailable')),
+    });
+
+    const response = await runBenchmark(gemini, null, 'temporary.wav');
+
+    expect(response.results['gemini-transcribe']).toMatchObject({
+      status: 'succeeded',
+      text: 'Gemini A transcript',
+    });
+    expect(response.results['transcript-repair']).toMatchObject({ status: 'failed' });
+  });
+
+  it('preserves a known-good baseline in the repair control seam', async () => {
+    const knownGood = 'Hello. This is a clear English sentence.';
+    const { gemini } = gateways({
+      repair: vi.fn().mockImplementation((_uri, _mime, baseline) => Promise.resolve(baseline)),
+      transcribe: vi.fn().mockResolvedValue(knownGood),
+    });
+
+    const response = await runBenchmark(gemini, null, 'temporary.wav');
+
+    expect(response.results['transcript-repair']?.text).toBe(knownGood);
+  });
+
+  it('supports a deliberately corrupted-baseline repair control without rewriting unrelated text', async () => {
+    const corrupted = 'Hello world this is a test. Unrelated phrase stays.';
+    const corrected = 'Hello world, this is a test. Unrelated phrase stays.';
+    const { gemini } = gateways({
+      transcribe: vi.fn().mockResolvedValue(corrupted),
+      repair: vi.fn().mockImplementation((_uri, _mime, baseline) => Promise.resolve(
+        baseline === corrupted ? corrected : baseline,
+      )),
+    });
+
+    const response = await runBenchmark(gemini, null, 'temporary.wav');
+
+    expect(response.results['transcript-repair']?.text).toBe(corrected);
+  });
+
+  it('keeps the generic repair instruction language-agnostic when context is unknown', () => {
+    const instruction = buildTranscriptRepairInstruction('A baseline transcript.');
+
+    expect(instruction).toContain('The original audio is authoritative.');
+    expect(instruction).toContain('Preserve natural code-switching.');
+    expect(instruction).toContain('Do not translate between languages.');
+    expect(instruction).toContain('Do not summarize.');
+    expect(instruction).toContain('Do not paraphrase.');
+    expect(instruction).not.toMatch(/Moroccan|Darija|Arabic|French|Morocco/i);
+  });
+
+  it('makes optional language context advisory rather than authoritative', () => {
+    const instruction = buildTranscriptRepairInstruction('Baseline.', {
+      likelyLanguages: ['Hindi', 'English'],
+      localeHints: ['India'],
+      preserveCodeSwitching: true,
+    });
+
+    expect(instruction).toContain('Likely languages in this session: Hindi, English.');
+    expect(instruction).toContain('Locale hints: India.');
+    expect(instruction).toContain('These are hints only. The audio remains authoritative.');
   });
 
   it('does not run reconciliation unless explicitly enabled', async () => {

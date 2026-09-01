@@ -1,6 +1,6 @@
-# Recall — Phase 0.6
+# Recall — Phase 0.7
 
-Recall is a mobile-first multilingual memory and transcription prototype. Phase 0 validated the continuous local recording and live transcription pipeline. Phase 0.5 added post-recording file transcription. Phase 0.6 adds a controlled Darija backend benchmark using the same saved WAV.
+Recall is a mobile-first multilingual memory and transcription prototype for worldwide lecture, meeting, interview, study, conversation, and brainstorming capture. Phase 0 validated continuous local recording and live transcription. Phase 0.5 added post-recording file transcription. Phase 0.6 added controlled backend comparisons, and Phase 0.7 adds an optional language-agnostic, audio-grounded repair pass. Moroccan Darija is currently the difficult stress-test benchmark, not Recall's target language.
 
 ## What this prototype proves
 
@@ -13,7 +13,8 @@ Recall is a mobile-first multilingual memory and transcription prototype. Phase 
 - Bookmarks retain elapsed timestamps from the beginning of the application-level recording.
 - Gemini connections reconnect and rotate around 8.5 minutes while the local recording and elapsed timer continue.
 - After recording stops, the saved WAV can be refined asynchronously through the local server while the live transcript and local audio remain available immediately.
-- The same saved WAV can be compared across Gemini Transcribe, Cloud Speech-to-Text V2 Chirp 3 (`ar-MA`), Gemini 3.7 Flash audio understanding, and the temporary Gemini 3.5 Flash-Lite comparison without overwriting any output.
+- The same saved WAV can be compared across Gemini Transcribe, Cloud Speech-to-Text V2 Chirp 3 (`ar-MA`), Gemini 3.7 Flash audio understanding, the temporary Gemini 3.5 Flash-Lite comparison, and a separate audio-grounded repair of A without overwriting any output.
+- The repair layer is language-agnostic by default. Optional session language/locale hints are advisory and preserve code-switching rather than forcing a locale or script.
 
 This is deliberately not the full Recall product. There is no login, cloud persistence, playback screen, summarization, embeddings, search, cross-session Q&A, sharing, or settings system.
 
@@ -52,6 +53,7 @@ Then set `GEMINI_API_KEY` in `.env`. The `.env` file is ignored by git and must 
 | `GOOGLE_CLOUD_SPEECH_LOCATION` | token server only | Optional Cloud Speech-to-Text location; defaults to `us`. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | token server only | Optional path used by Google Application Default Credentials. Never commit the credential file. User ADC is also supported. |
 | `RECALL_ENABLE_RECONCILIATION` | token server only | Must be `true` to run experimental reconciliation D; defaults to `false` and should remain false until A/B/C work independently. |
+| `RECALL_BENCHMARK_LANGUAGE_MODE` | token server only | `hinted` (default) adds the current benchmark's advisory context; `auto` sends empty language context. |
 
 Common local values:
 
@@ -75,7 +77,7 @@ Verify it locally with:
 curl http://127.0.0.1:8787/health
 ```
 
-The expected response is `{"ok":true}`. `POST /token` mints a single-use ephemeral token constrained to the transcribe-live model and text transcription configuration. `POST /transcribe` remains the Phase 0.5 single-backend endpoint. `POST /benchmark` accepts one raw WAV body and runs the Phase 0.6 comparison; both endpoints are local-development-only and do not retain uploaded audio on the server.
+The expected response is `{"ok":true}`. `POST /token` mints a single-use ephemeral token constrained to the transcribe-live model and text transcription configuration. `POST /transcribe` remains the Phase 0.5 single-backend endpoint. `POST /benchmark` accepts one raw WAV body and runs the Phase 0.6/0.7 comparison; both endpoints are local-development-only and do not retain uploaded audio on the server.
 
 ### Optional Chirp 3 setup
 
@@ -99,7 +101,7 @@ or by setting `GOOGLE_APPLICATION_CREDENTIALS` to an uncommitted service-account
 
 4. Set `GOOGLE_CLOUD_PROJECT_ID=YOUR_PROJECT_ID` in the local `.env`, then restart the token server. The adapter uses V2 `Recognize`, location `us` by default, model `chirp_3`, and `languageCodes: ['ar-MA']`.
 
-If this setup is absent, the benchmark still runs A and C; B is returned as `failed` with a configuration message. That is an untested/unavailable backend, not a successful Chirp result.
+If this setup is absent, the benchmark still runs A, C, C2, and D2; B is returned as `failed` with a configuration message. That is an untested/unavailable backend, not a successful Chirp result.
 
 ## Run the Expo app
 
@@ -149,19 +151,20 @@ local WAV → POST /transcribe → temporary server file → Gemini Files API
          → gemini-3.5-transcribe (automatic language detection, verbatim)
          → refined transcript → mobile app
 
-Phase 0.6 benchmark:
+Phase 0.6/0.7 benchmark:
 
 local WAV → POST /benchmark → one temporary server file
           ├→ shared Gemini File → gemini-3.5-transcribe (A)
           ├→ Cloud Speech-to-Text V2 Recognize → chirp_3 + ar-MA (B)
           ├→ shared Gemini File → gemini-3.7-flash + strict transcription instruction (C)
           ├→ shared Gemini File → gemini-3.5-flash-lite + the same strict instruction (C2)
+          ├→ same shared Gemini File + A transcript → gemini-3.5-flash-lite audio-grounded repair (D2)
           └→ optional shared Gemini File → gemini-3.7-flash reconciliation (D, opt-in only)
 ```
 
 The mobile app never receives or stores the long-lived Gemini API key. `GeminiTokenClient` talks to the small `/token` boundary, and `GeminiLiveTranscription` uses the returned ephemeral token for a direct WebSocket connection. The session manager owns connection state, reconnect backoff, connection IDs, generation numbers, and timestamp conversion. The recording hook owns application recording state and starts/stops only one native recorder.
 
-The refinement and benchmark paths are separate from live transcription. After capture stops, the mobile app posts the finalized local WAV once to `/benchmark`. The server validates the WAV, writes it to a temporary directory, shares one `ai.files.upload` result between Gemini A/C/C2/D, calls Cloud V2 directly for B, attempts to delete the temporary Gemini File, and removes its local temporary directory in a `finally` block. Results are returned independently with status, model, language configuration, raw transcript, and processing time. The client does not receive the long-lived Gemini key or Cloud credentials.
+The refinement and benchmark paths are separate from live transcription. After capture stops, the mobile app posts the finalized local WAV once to `/benchmark`. The server validates the WAV, writes it to a temporary directory, shares one `ai.files.upload` result between Gemini A/C/C2/D2/D, calls Cloud V2 directly for B, runs D2 only after A succeeds using A's text plus the original audio, attempts to delete the temporary Gemini File, and removes its local temporary directory in a `finally` block. Results are returned independently with status, model, language configuration, raw transcript, and processing time. The client does not receive the long-lived Gemini key or Cloud credentials.
 
 ## Project structure
 
@@ -174,6 +177,7 @@ The refinement and benchmark paths are separate from live transcription. After c
 - `src/services/refinementState.ts` — pure refinement status transitions and retry eligibility.
 - `src/services/benchmarkClient.ts` — posts one saved WAV to the Phase 0.6 benchmark boundary without credentials.
 - `src/services/benchmarkState.ts` — pure benchmark status and independent backend-result state.
+- `src/types/languageContext.ts` — optional advisory session language/locale context.
 - `src/services/transcriptAccumulator.ts` — structured finalized/interim transcript accumulation and duplicate handling.
 - `src/services/sessionTiming.ts` — rotation timing and overall-recording timestamp conversion.
 - `src/services/connectionState.ts` — pure connection state transition logic.
@@ -181,9 +185,9 @@ The refinement and benchmark paths are separate from live transcription. After c
 - `src/types/` — transcript, bookmark, and stopped-recording types.
 - `src/design/tokens.ts` — small warm/editorial visual token layer.
 - `server/index.ts` — local Node/TypeScript token and post-recording refinement server.
-- `server/transcriptionService.ts` — current @google/genai Files API and Interactions adapter for `gemini-3.5-transcribe`.
+- `server/transcriptionService.ts` — current @google/genai Files API and Interactions adapters for A and audio-grounded repair D2.
 - `server/chirp3TranscriptionService.ts` — optional Cloud Speech-to-Text V2 `Recognize` adapter for `chirp_3` + `ar-MA`.
-- `server/benchmarkService.ts` — independent A/B/C/C2 orchestration and opt-in D reconciliation.
+- `server/benchmarkService.ts` — independent A/B/C/C2/D2 orchestration and opt-in D reconciliation.
 - `server/wavValidation.ts` — bounded RIFF/WAVE PCM16 validation and metadata extraction.
 - `tests/` — hardware-independent logic tests.
 
@@ -207,22 +211,24 @@ These validate TypeScript, server TypeScript, pure session/transcript/bookmark/r
 - Transcript timestamps are receive-time/utterance-level approximations because live transcription events do not currently expose a complete word-level audio timeline in this adapter.
 - No local recording playback or durable session index has been added yet.
 - Phase 0.5 refinement is current-session only; there is no durable transcript/refinement database or upload history.
-- Phase 0.6 benchmark results are current-session only and intentionally unscored. A/B/C/C2 outputs remain raw and separate; no Arabic/Latin normalization or automatic reference scoring is performed.
+- Phase 0.6/0.7 benchmark results are current-session only and intentionally unscored. A/B/C/C2 outputs remain raw and separate; D2 is a separate repair of A, not a replacement for it. No script normalization, translation, prose cleanup, or automatic reference scoring is performed.
+- D2 uses a generic audio-grounded repair instruction with empty/unknown language context by default in the provider seam. The local benchmark server defaults to advisory hinted context only to evaluate the current difficult multilingual sample; set `RECALL_BENCHMARK_LANGUAGE_MODE=auto` for the no-hints comparison.
 - Chirp 3 requires a Google Cloud project, billing, enabled Speech-to-Text API, and ADC. Its `ar-MA` support is documented as Preview and must be manually validated against the same samples.
 - Reconciliation D is disabled by default because it is an experimental LLM comparison layer and may hallucinate; it is never run unless `RECALL_ENABLE_RECONCILIATION=true`.
 - If remote Gemini File deletion fails, the uploaded resource remains subject to the Gemini service's normal lifecycle; the local temporary WAV is still removed.
 - The local token endpoint uses permissive CORS and has no user authentication; it is for development only.
 - The UI is intentionally functional and lightly styled. Accessibility, error copy, and visual polish need a dedicated pass after the native pipeline is proven.
 
-## Phase 0.6 benchmark
+## Phase 0.7 benchmark
 
-With the existing Android development build and token server running, make one fresh 20–30 second natural Moroccan Darija/French/English recording first. Compare the separate outputs shown after stop:
+With the existing Android development build and token server running, make one fresh 20–30 second multilingual recording. For the current difficult benchmark, a natural Moroccan Darija/French/English sample is useful, but it is not a product-language requirement. Compare the separate outputs shown after stop:
 
 1. `LIVE TRANSCRIPT` — existing live output.
 2. `GEMINI TRANSCRIBE · A` — `gemini-3.5-transcribe`, automatic detection, verbatim.
 3. `CHIRP 3 ar-MA · B` — Cloud V2 `chirp_3`, explicitly `ar-MA`, or a clear configuration failure if Cloud is not enabled.
 4. `GEMINI AUDIO UNDERSTANDING · C` — `gemini-3.7-flash` with the strict no-translation transcription instruction.
 5. `GEMINI FLASH-LITE · C2` — `gemini-3.5-flash-lite` with the same strict instruction.
-6. `RECONCILED · D` — only when explicitly enabled after A/B/C have independently succeeded.
+6. `AUDIO-GROUNDED REPAIR · D2` — `gemini-3.5-flash-lite` checks A against the original audio. The result shows `AUTO LANGUAGE CONTEXT` or the benchmark's `HINTED` context.
+7. `RECONCILED · D` — only when explicitly enabled after A/B/C have independently succeeded; it remains disabled for this experiment.
 
-Record the duration, recording date, local file URI, backend/model/configuration, raw output, status, and processing time for each. No locale/script normalization, translation, correction, or automatic scoring is applied.
+Record the duration, recording date, local file URI, backend/model/configuration, raw output, status, and processing time for each. D2 may correct only clearly audio-verifiable recognition errors; it must not translate, summarize, paraphrase, standardize dialect, or make a good transcript prettier. No locale/script normalization, translation, or automatic scoring is applied.

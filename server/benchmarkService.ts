@@ -1,10 +1,10 @@
 import {
-  DARIIJA_TRANSCRIPTION_INSTRUCTION,
   GEMINI_AUDIO_UNDERSTANDING_MODEL,
   GEMINI_FLASH_LITE_MODEL,
   NON_LIVE_TRANSCRIPTION_MODEL,
   WAV_MIME_TYPE,
   createGeminiInteractionDiagnostic,
+  describeTranscriptLanguageContext,
   GeminiInteractionError,
   type GeminiTranscriptionGateway,
   type UploadedAudioFile,
@@ -20,9 +20,11 @@ import type {
   BenchmarkDiagnostic,
   BenchmarkResponse,
 } from '../src/types/benchmark.js';
+import type { TranscriptLanguageContext } from '../src/types/languageContext.js';
 
 export interface BenchmarkServiceOptions {
   includeReconciled?: boolean;
+  transcriptLanguageContext?: TranscriptLanguageContext;
 }
 
 interface BenchmarkDefinition {
@@ -57,6 +59,12 @@ const DEFINITIONS: Record<BenchmarkBackendId, BenchmarkDefinition> = {
     model: GEMINI_FLASH_LITE_MODEL,
     languageConfiguration: 'prompt-guided multilingual transcription',
   },
+  'transcript-repair': {
+    id: 'transcript-repair',
+    label: 'AUDIO-GROUNDED REPAIR · D2',
+    model: GEMINI_FLASH_LITE_MODEL,
+    languageConfiguration: 'advisory language context · audio authoritative',
+  },
   reconciled: {
     id: 'reconciled',
     label: 'RECONCILED · D',
@@ -65,9 +73,28 @@ const DEFINITIONS: Record<BenchmarkBackendId, BenchmarkDefinition> = {
   },
 };
 
-function succeeded(id: BenchmarkBackendId, text: string, processingMs: number): BenchmarkBackendResult {
+// This is intentionally scoped to the current difficult benchmark. It is not
+// used by the reusable D2 repair provider or the core application flow.
+const BENCHMARK_TRANSCRIPTION_INSTRUCTION = [
+  'You are transcribing speech, not summarizing it.',
+  'The speaker is Moroccan and may naturally code-switch between Moroccan Darija, French, and English.',
+  'Transcribe exactly what is spoken.',
+  'Do not translate, summarize, paraphrase, or grammatically correct the speech.',
+  'Preserve French words as French and English words as English.',
+  'Do not replace Moroccan Darija with Modern Standard Arabic.',
+  'For Moroccan Darija, use Arabic script where possible.',
+  'If a word is genuinely uncertain, do not invent unrelated content.',
+].join(' ');
+
+function succeeded(
+  id: BenchmarkBackendId,
+  text: string,
+  processingMs: number,
+  languageConfiguration = DEFINITIONS[id].languageConfiguration,
+): BenchmarkBackendResult {
   return {
     ...DEFINITIONS[id],
+    languageConfiguration,
     status: 'succeeded',
     text,
     error: null,
@@ -81,9 +108,11 @@ function failed(
   error: string,
   processingMs: number | null = null,
   diagnostic: BenchmarkDiagnostic | null = null,
+  languageConfiguration = DEFINITIONS[id].languageConfiguration,
 ): BenchmarkBackendResult {
   return {
     ...DEFINITIONS[id],
+    languageConfiguration,
     status: 'failed',
     text: null,
     error,
@@ -126,7 +155,7 @@ async function runGeminiAudioUnderstanding(
     const text = await gateway.understand(
       uploadedFile.uri,
       uploadedFile.mimeType || WAV_MIME_TYPE,
-      DARIIJA_TRANSCRIPTION_INSTRUCTION,
+      BENCHMARK_TRANSCRIPTION_INSTRUCTION,
       model,
     );
     return succeeded(id, text, Date.now() - startedAt);
@@ -147,7 +176,7 @@ async function runGeminiAudioUnderstanding(
 
     const diagnostic = createGeminiInteractionDiagnostic(
       error,
-      GEMINI_AUDIO_UNDERSTANDING_MODEL,
+      model,
       'during interactions.create',
     );
     console.error(`[benchmark] ${id} failed`, JSON.stringify(diagnostic));
@@ -156,6 +185,50 @@ async function runGeminiAudioUnderstanding(
       'Gemini audio-understanding transcription failed.',
       Date.now() - startedAt,
       { stage: diagnostic.stage, code: diagnostic.code, status: diagnostic.status },
+    );
+  }
+}
+
+async function runTranscriptRepair(
+  gateway: GeminiTranscriptionGateway,
+  uploadedFile: UploadedAudioFile | null,
+  baseline: BenchmarkBackendResult,
+  languageContext: TranscriptLanguageContext | undefined,
+): Promise<BenchmarkBackendResult> {
+  const startedAt = Date.now();
+  const languageConfiguration = describeTranscriptLanguageContext(languageContext);
+  if (baseline.status !== 'succeeded') {
+    return failed(
+      'transcript-repair',
+      'D2 requires a successful Gemini Transcribe result from A.',
+      null,
+      null,
+      languageConfiguration,
+    );
+  }
+  if (!uploadedFile?.uri) {
+    return failed('transcript-repair', 'Gemini File upload failed.', null, null, languageConfiguration);
+  }
+
+  try {
+    const text = await gateway.repair(
+      uploadedFile.uri,
+      uploadedFile.mimeType || WAV_MIME_TYPE,
+      baseline.text || '',
+      languageContext,
+    );
+    return succeeded('transcript-repair', text, Date.now() - startedAt, languageConfiguration);
+  } catch (error) {
+    const diagnostic = error instanceof GeminiInteractionError
+      ? error.diagnostic
+      : createGeminiInteractionDiagnostic(error, GEMINI_FLASH_LITE_MODEL, 'during interactions.create');
+    console.error('[benchmark] transcript-repair failed', JSON.stringify(diagnostic));
+    return failed(
+      'transcript-repair',
+      'Audio-grounded transcript repair failed.',
+      Date.now() - startedAt,
+      { stage: diagnostic.stage, code: diagnostic.code, status: diagnostic.status },
+      languageConfiguration,
     );
   }
 }
@@ -201,8 +274,7 @@ async function runReconciliation(
     'Produce a faithful reconciled transcript by checking the candidate transcripts against the original audio.',
     'The audio is authoritative.',
     'Do not translate, summarize, paraphrase, or grammatically correct the speech.',
-    'Preserve code-switching. Keep French and English in their own language.',
-    'Moroccan Darija may appear in Arabic script.',
+    'Preserve the languages and writing systems present in the audio.',
     'Do not invent missing content.',
     'Candidate transcripts:',
     candidateText,
@@ -255,6 +327,13 @@ export async function runBenchmark(
       'gemini-audio-understanding': independentResults[2],
       'gemini-flash-lite': independentResults[3],
     };
+
+    results['transcript-repair'] = await runTranscriptRepair(
+      geminiGateway,
+      uploadedFile,
+      independentResults[0],
+      options.transcriptLanguageContext,
+    );
 
     if (includeReconciled) {
       results.reconciled = await runReconciliation(geminiGateway, uploadedFile, [

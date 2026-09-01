@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createGeminiTranscriptionGateway,
+  buildTranscriptRepairInstruction,
   GeminiInteractionError,
   RefinementServiceError,
   transcribeWavFile,
@@ -224,6 +225,7 @@ describe('transcribeWavFile', () => {
       upload: vi.fn().mockResolvedValue({ name: 'files/temporary', uri: 'https://files.example/audio', mimeType: 'audio/wav' }),
       transcribe: vi.fn().mockResolvedValue('Refined transcript.'),
       understand: vi.fn().mockResolvedValue('Audio understanding transcript.'),
+      repair: vi.fn().mockResolvedValue('Repaired transcript.'),
       delete: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -245,6 +247,7 @@ describe('transcribeWavFile', () => {
       upload: vi.fn().mockResolvedValue({ name: 'files/temporary', uri: 'https://files.example/audio' }),
       transcribe: vi.fn().mockRejectedValue(new Error('Gemini unavailable')),
       understand: vi.fn(),
+      repair: vi.fn(),
       delete: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -260,6 +263,7 @@ describe('transcribeWavFile', () => {
       upload: vi.fn().mockRejectedValue(new Error('secret provider details')),
       transcribe: vi.fn(),
       understand: vi.fn(),
+      repair: vi.fn(),
       delete: vi.fn(),
     };
 
@@ -268,5 +272,57 @@ describe('transcribeWavFile', () => {
       message: 'Gemini Files upload failed.',
     });
     expect(gateway.transcribe).not.toHaveBeenCalled();
+  });
+
+  it('builds a generic repair instruction with no language-specific requirement', () => {
+    const instruction = buildTranscriptRepairInstruction('Hello there.');
+
+    expect(instruction).toContain('The original audio is authoritative.');
+    expect(instruction).toContain('Preserve natural code-switching.');
+    expect(instruction).toContain('Do not translate between languages.');
+    expect(instruction).toContain('Do not summarize.');
+    expect(instruction).toContain('Do not paraphrase.');
+    expect(instruction).not.toMatch(/Moroccan|Darija|Arabic|French|Morocco/i);
+    expect(instruction).toContain('BASE TRANSCRIPT:\nHello there.');
+  });
+
+  it('appends language context as advisory hints', () => {
+    const instruction = buildTranscriptRepairInstruction('Baseline.', {
+      likelyLanguages: ['Japanese', 'English'],
+      localeHints: ['Japan'],
+      preserveCodeSwitching: true,
+    });
+
+    expect(instruction).toContain('Additional context:');
+    expect(instruction).toContain('Likely languages in this session: Japanese, English.');
+    expect(instruction).toContain('Locale hints: Japan.');
+    expect(instruction).toContain('These are hints only. The audio remains authoritative.');
+  });
+
+  it('sends D2 text first, audio second, with A baseline and no C2 input', async () => {
+    const create = vi.fn().mockResolvedValue({ output_text: 'Repaired transcript.' });
+    const ai = {
+      files: { upload: vi.fn(), delete: vi.fn() },
+      interactions: { create },
+    } as unknown as GoogleGenAI;
+    const gateway = createGeminiTranscriptionGateway(ai);
+
+    await gateway.repair(
+      'https://files.example/audio',
+      'audio/wav',
+      'A baseline transcript',
+      { likelyLanguages: ['English'], preserveCodeSwitching: true },
+    );
+
+    const request = create.mock.calls[0]?.[0];
+    expect(request).toMatchObject({
+      model: 'gemini-3.5-flash-lite',
+      input: [
+        { type: 'text' },
+        { type: 'audio', uri: 'https://files.example/audio', mime_type: 'audio/wav' },
+      ],
+    });
+    expect(request.input[0].text).toContain('A baseline transcript');
+    expect(request.input[0].text).not.toContain('C2 transcript');
   });
 });
