@@ -10,7 +10,7 @@ import {
 import { colors, displayFont, layout, radii, spacing, typography } from '@/design/tokens';
 import { useRecordingSession } from '@/hooks/useRecordingSession';
 import type { Bookmark } from '@/types/bookmark';
-import type { TranscriptRefinementState } from '@/types/refinement';
+import type { BenchmarkBackendResult, BenchmarkState } from '@/types/benchmark';
 import type { StoppedRecording } from '@/types/recording';
 import type { TranscriptSegment } from '@/types/transcript';
 import { formatElapsedMs, formatTimestampMs } from '@/utils/time';
@@ -141,6 +141,45 @@ function TranscriptLines({ segments }: { segments: TranscriptSegment[] }) {
   );
 }
 
+function BenchmarkOutput({ result }: { result: BenchmarkBackendResult }) {
+  return (
+    <View style={styles.refinementSection}>
+      <View style={styles.transcriptHeader}>
+        <SectionLabel>{result.label}</SectionLabel>
+        <Text style={styles.segmentCount}>{result.status}</Text>
+      </View>
+      <Text style={styles.debugText}>
+        {result.model} · {result.languageConfiguration}
+      </Text>
+      {(result.status === 'pending' || result.status === 'running') && (
+        <Text style={styles.emptyTranscript}>
+          {result.status === 'running' ? 'Running benchmark…' : 'Waiting to run…'}
+        </Text>
+      )}
+      {result.status === 'succeeded' && (
+        <View style={styles.refinedTranscriptBlock}>
+          {result.text ? (
+            <Text style={styles.transcriptText}>{result.text}</Text>
+          ) : (
+            <Text style={styles.emptyTranscript}>No transcript was returned.</Text>
+          )}
+          {result.processingMs !== null && (
+            <Text style={styles.debugText}>{result.processingMs} ms</Text>
+          )}
+        </View>
+      )}
+      {result.status === 'failed' && (
+        <View style={styles.refinementError}>
+          <Text style={styles.errorText}>{result.error || 'Backend failed.'}</Text>
+          {result.processingMs !== null && (
+            <Text style={styles.debugText}>{result.processingMs} ms</Text>
+          )}
+        </View>
+      )}
+    </View>
+  );
+}
+
 function RecordingScreen({
   elapsedMs,
   connectionState,
@@ -225,14 +264,12 @@ function RecordingScreen({
 function StoppedScreen({
   stoppedRecording,
   error,
-  refinement,
-  onRetryRefinement,
+  benchmark,
   onReset,
 }: {
   stoppedRecording: StoppedRecording;
   error: string | null;
-  refinement: TranscriptRefinementState;
-  onRetryRefinement: () => void;
+  benchmark: BenchmarkState;
   onReset: () => void;
 }) {
   const { recording, recordedAt, durationMs, finalizedSegments, bookmarks, debug } = stoppedRecording;
@@ -274,29 +311,17 @@ function StoppedScreen({
         )}
       </View>
 
-      <View style={styles.refinementSection}>
+      <View style={styles.benchmarkHeader}>
         <View style={styles.transcriptHeader}>
-          <SectionLabel>REFINED TRANSCRIPT</SectionLabel>
-          <Text style={styles.segmentCount}>{refinement.status}</Text>
+          <SectionLabel>BACKEND COMPARISON</SectionLabel>
+          <Text style={styles.segmentCount}>{benchmark.status}</Text>
         </View>
-        {refinement.status === 'refining' && (
-          <Text style={styles.emptyTranscript}>Refining transcript…</Text>
-        )}
-        {refinement.status === 'succeeded' && (
-          <View style={styles.refinedTranscriptBlock}>
-            {refinement.text ? (
-              <Text style={styles.transcriptText}>{refinement.text}</Text>
-            ) : (
-              <Text style={styles.emptyTranscript}>No speech was returned by the refined transcription.</Text>
-            )}
-            {refinement.model && <Text style={styles.debugText}>{refinement.model} · verbatim</Text>}
-          </View>
-        )}
-        {refinement.status === 'failed' && (
-          <View style={styles.refinementError}>
-            <Text style={styles.errorText}>{refinement.error || 'Transcript refinement failed.'}</Text>
-            <PressableButton label="Retry refinement" onPress={onRetryRefinement} variant="secondary" />
-          </View>
+        {(['gemini-transcribe', 'chirp-3-ar-MA', 'gemini-audio-understanding'] as const).map((id) => {
+          const result = benchmark.results[id];
+          return result ? <BenchmarkOutput key={id} result={result} /> : null;
+        })}
+        {benchmark.reconciliationEnabled && benchmark.results.reconciled && (
+          <BenchmarkOutput result={benchmark.results.reconciled} />
         )}
       </View>
 
@@ -364,8 +389,7 @@ export default function RecallScreen() {
         <StoppedScreen
           stoppedRecording={session.stoppedRecording}
           error={session.error}
-          refinement={session.refinement}
-          onRetryRefinement={session.retryRefinement}
+          benchmark={session.benchmark}
           onReset={session.reset}
         />
       </View>
@@ -584,6 +608,9 @@ const styles = StyleSheet.create({
     paddingTop: spacing.lg,
     borderTopWidth: 1,
     borderColor: colors.line,
+  },
+  benchmarkHeader: {
+    paddingTop: spacing.lg,
   },
   refinedTranscriptBlock: {
     gap: spacing.sm,

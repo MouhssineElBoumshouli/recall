@@ -1,7 +1,19 @@
 import type { GoogleGenAI } from '@google/genai';
 
 export const NON_LIVE_TRANSCRIPTION_MODEL = 'gemini-3.5-transcribe';
+export const GEMINI_AUDIO_UNDERSTANDING_MODEL = 'gemini-3.7-flash';
 export const WAV_MIME_TYPE = 'audio/wav';
+
+export const DARIIJA_TRANSCRIPTION_INSTRUCTION = [
+  'You are transcribing speech, not summarizing it.',
+  'The speaker is Moroccan and may naturally code-switch between Moroccan Darija, French, and English.',
+  'Transcribe exactly what is spoken.',
+  'Do not translate, summarize, paraphrase, or grammatically correct the speech.',
+  'Preserve French words as French and English words as English.',
+  'Do not replace Moroccan Darija with Modern Standard Arabic.',
+  'For Moroccan Darija, use Arabic script where possible.',
+  'If a word is genuinely uncertain, do not invent unrelated content.',
+].join(' ');
 
 export interface RefinedTranscriptionOptions {
   customVocabulary?: string[];
@@ -19,6 +31,11 @@ export interface GeminiTranscriptionGateway {
     fileUri: string,
     mimeType: string,
     options: RefinedTranscriptionOptions,
+  ): Promise<string>;
+  understand(
+    fileUri: string,
+    mimeType: string,
+    instruction: string,
   ): Promise<string>;
   delete(fileName: string): Promise<void>;
 }
@@ -61,6 +78,18 @@ export function createGeminiTranscriptionGateway(ai: GoogleGenAI): GeminiTranscr
         generation_config: {
           transcription_config: transcriptionConfig,
         },
+      });
+
+      return interaction.output_text ?? '';
+    },
+
+    async understand(fileUri, mimeType, instruction) {
+      const interaction = await ai.interactions.create({
+        model: GEMINI_AUDIO_UNDERSTANDING_MODEL,
+        input: [
+          { type: 'audio', uri: fileUri, mime_type: mimeType },
+          { type: 'text', text: instruction },
+        ],
       });
 
       return interaction.output_text ?? '';

@@ -131,10 +131,35 @@ describe('transcribeWavFile', () => {
     expect(deleteFile).toHaveBeenCalledWith({ name: 'files/temporary' });
   });
 
+  it('uses the current Gemini audio-understanding model with the strict transcription instruction', async () => {
+    const upload = vi.fn().mockResolvedValue({
+      name: 'files/temporary',
+      uri: 'https://files.example/audio',
+      mimeType: 'audio/wav',
+    });
+    const create = vi.fn().mockResolvedValue({ output_text: 'Audio understanding transcript.' });
+    const ai = {
+      files: { upload, delete: vi.fn() },
+      interactions: { create },
+    } as unknown as GoogleGenAI;
+    const gateway = createGeminiTranscriptionGateway(ai);
+
+    await gateway.understand('https://files.example/audio', 'audio/wav', 'transcribe exactly');
+
+    expect(create).toHaveBeenCalledWith({
+      model: 'gemini-3.7-flash',
+      input: [
+        { type: 'audio', uri: 'https://files.example/audio', mime_type: 'audio/wav' },
+        { type: 'text', text: 'transcribe exactly' },
+      ],
+    });
+  });
+
   it('uploads, transcribes, and deletes the temporary Gemini file', async () => {
     const gateway: GeminiTranscriptionGateway = {
       upload: vi.fn().mockResolvedValue({ name: 'files/temporary', uri: 'https://files.example/audio', mimeType: 'audio/wav' }),
       transcribe: vi.fn().mockResolvedValue('Refined transcript.'),
+      understand: vi.fn().mockResolvedValue('Audio understanding transcript.'),
       delete: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -155,6 +180,7 @@ describe('transcribeWavFile', () => {
     const gateway: GeminiTranscriptionGateway = {
       upload: vi.fn().mockResolvedValue({ name: 'files/temporary', uri: 'https://files.example/audio' }),
       transcribe: vi.fn().mockRejectedValue(new Error('Gemini unavailable')),
+      understand: vi.fn(),
       delete: vi.fn().mockResolvedValue(undefined),
     };
 
@@ -169,6 +195,7 @@ describe('transcribeWavFile', () => {
     const gateway: GeminiTranscriptionGateway = {
       upload: vi.fn().mockRejectedValue(new Error('secret provider details')),
       transcribe: vi.fn(),
+      understand: vi.fn(),
       delete: vi.fn(),
     };
 

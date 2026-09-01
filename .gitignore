@@ -58,6 +58,11 @@ yarn-error.*
 .env
 .env*.local
 
+# Google Cloud local credential files
+*service-account*.json
+*application-default*.json
+/secrets/
+
 # typescript
 *.tsbuildinfo
 

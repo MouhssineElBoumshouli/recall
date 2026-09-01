@@ -9,22 +9,21 @@ import {
 import { tokenServerUrl } from '@/config';
 import { colors } from '@/design/tokens';
 import { createBookmark } from '@/services/bookmarkService';
+import { TranscriptionBenchmarkClient } from '@/services/benchmarkClient';
 import { GeminiTokenClient } from '@/services/geminiTokenClient';
-import { RefinementAttemptController } from '@/services/refinementAttemptController';
 import {
   LiveTranscriptionSessionManager,
   type ManagedTranscriptEvent,
 } from '@/services/liveTranscriptionSessionManager';
-import { RefinedTranscriptionClient } from '@/services/refinedTranscriptionClient';
 import {
-  initialRefinementState,
-  refinementFailed,
-  refinementStarted,
-  refinementSucceeded,
-} from '@/services/refinementState';
+  benchmarkCompleted,
+  benchmarkFailed,
+  benchmarkStarted,
+  initialBenchmarkState,
+} from '@/services/benchmarkState';
 import { TranscriptAccumulator } from '@/services/transcriptAccumulator';
 import type { Bookmark } from '@/types/bookmark';
-import type { TranscriptRefinementState } from '@/types/refinement';
+import type { BenchmarkState } from '@/types/benchmark';
 import type {
   RecordingDebugInfo,
   RecordingPhase,
@@ -125,15 +124,15 @@ export function useRecordingSession() {
   const [error, setError] = useState<string | null>(null);
   const [debug, setDebug] = useState<RecordingDebugInfo>(initialDebug);
   const [stoppedRecording, setStoppedRecording] = useState<StoppedRecording | null>(null);
-  const [refinement, setRefinement] = useState<TranscriptRefinementState>(initialRefinementState);
+  const [benchmark, setBenchmark] = useState<BenchmarkState>(initialBenchmarkState);
 
   const phaseRef = useRef<RecordingPhase>('idle');
   const startedAtMsRef = useRef(0);
   const nativeStartedRef = useRef(false);
   const bookmarksRef = useRef<Bookmark[]>([]);
+  const benchmarkAttemptRef = useRef(0);
   const [transcriptAccumulator] = useState(() => new TranscriptAccumulator());
-  const [refinementClient] = useState(() => new RefinedTranscriptionClient(tokenServerUrl));
-  const [refinementController] = useState(() => new RefinementAttemptController());
+  const [benchmarkClient] = useState(() => new TranscriptionBenchmarkClient(tokenServerUrl));
   const [manager] = useState(
     () =>
       new LiveTranscriptionSessionManager({
@@ -186,6 +185,7 @@ export function useRecordingSession() {
 
   useEffect(
     () => () => {
+      benchmarkAttemptRef.current += 1;
       void (async () => {
         if (nativeStartedRef.current) {
           try {
@@ -201,38 +201,34 @@ export function useRecordingSession() {
     [manager, stopNativeRecording],
   );
 
-  const runRefinement = useCallback(
+  const runBenchmark = useCallback(
     async (fileUri: string | null, attempt: number) => {
       try {
         if (!fileUri) {
-          setRefinement((current) =>
-            refinementFailed(current, 'The local audio file is unavailable for refinement.'),
-          );
+          if (attempt === benchmarkAttemptRef.current) {
+            setBenchmark((current) => benchmarkFailed(current, 'The local audio file is unavailable.'));
+          }
           return;
         }
 
-        const result = await refinementClient.transcribe(fileUri);
-        if (!refinementController.isCurrent(attempt)) {
+        const result = await benchmarkClient.run(fileUri);
+        if (attempt !== benchmarkAttemptRef.current) {
           return;
         }
-        setRefinement((current) =>
-          refinementSucceeded(current, result.text, result.model, new Date().toISOString()),
-        );
-      } catch (refinementError) {
-        if (!refinementController.isCurrent(attempt)) {
+        setBenchmark(benchmarkCompleted(result));
+      } catch (benchmarkError) {
+        if (attempt !== benchmarkAttemptRef.current) {
           return;
         }
-        setRefinement((current) =>
-          refinementFailed(
+        setBenchmark((current) =>
+          benchmarkFailed(
             current,
-            refinementError instanceof Error ? refinementError.message : 'Transcript refinement failed.',
+            benchmarkError instanceof Error ? benchmarkError.message : 'Transcription benchmark failed.',
           ),
         );
-      } finally {
-        refinementController.finish(attempt);
       }
     },
-    [refinementClient, refinementController],
+    [benchmarkClient],
   );
 
   const start = useCallback(async () => {
@@ -244,8 +240,8 @@ export function useRecordingSession() {
     setPhase('starting');
     setError(null);
     setStoppedRecording(null);
-    refinementController.invalidate();
-    setRefinement({ ...initialRefinementState });
+    benchmarkAttemptRef.current += 1;
+    setBenchmark({ ...initialBenchmarkState });
     transcriptAccumulator.reset();
     bookmarksRef.current = [];
     setFinalizedSegments([]);
@@ -301,7 +297,7 @@ export function useRecordingSession() {
       }
       await manager.stop();
     }
-  }, [manager, prepareRecording, refinementController, startNativeRecording, stopNativeRecording, transcriptAccumulator]);
+  }, [manager, prepareRecording, startNativeRecording, stopNativeRecording, transcriptAccumulator]);
 
   const stop = useCallback(async () => {
     if (phaseRef.current !== 'recording') {
@@ -339,14 +335,13 @@ export function useRecordingSession() {
     setDebug(nextDebug);
     setConnectionState(nextDebug.connectionState);
     setError(stopError);
-    const refinementAttempt = refinementController.begin();
-    if (refinementAttempt !== null) {
-      setRefinement((current) => refinementStarted(current));
-      void runRefinement(recording?.fileUri || null, refinementAttempt);
-    }
+    const benchmarkAttempt = benchmarkAttemptRef.current + 1;
+    benchmarkAttemptRef.current = benchmarkAttempt;
+    setBenchmark(benchmarkStarted());
+    void runBenchmark(recording?.fileUri || null, benchmarkAttempt);
     phaseRef.current = 'stopped';
     setPhase('stopped');
-  }, [manager, refinementController, runRefinement, stopNativeRecording, transcriptAccumulator]);
+  }, [manager, runBenchmark, stopNativeRecording, transcriptAccumulator]);
 
   const addBookmark = useCallback(() => {
     if (phaseRef.current !== 'recording') {
@@ -367,8 +362,8 @@ export function useRecordingSession() {
     phaseRef.current = 'idle';
     setPhase('idle');
     setStoppedRecording(null);
-    refinementController.invalidate();
-    setRefinement({ ...initialRefinementState });
+    benchmarkAttemptRef.current += 1;
+    setBenchmark({ ...initialBenchmarkState });
     setError(null);
     setElapsedMs(0);
     setFinalizedSegments([]);
@@ -376,22 +371,7 @@ export function useRecordingSession() {
     setBookmarks([]);
     setConnectionState('idle');
     setDebug({ ...initialDebug });
-  }, [refinementController]);
-
-  const retryRefinement = useCallback(() => {
-    if (phaseRef.current !== 'stopped' || refinement.status !== 'failed') {
-      return;
-    }
-
-    const fileUri = stoppedRecording?.recording?.fileUri || null;
-    const refinementAttempt = refinementController.begin();
-    if (refinementAttempt === null) {
-      return;
-    }
-
-    setRefinement((current) => refinementStarted(current));
-    void runRefinement(fileUri, refinementAttempt);
-  }, [refinement, refinementController, runRefinement, stoppedRecording]);
+  }, []);
 
   return {
     phase,
@@ -404,12 +384,11 @@ export function useRecordingSession() {
     error,
     debug,
     stoppedRecording,
-    refinement,
+    benchmark,
     start,
     stop,
     addBookmark,
     reset,
-    retryRefinement,
     accentColor: colors.accent,
   };
 }

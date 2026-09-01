@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { config } from 'dotenv';
 import { GoogleGenAI, Modality } from '@google/genai';
 
+import { createChirp3TranscriptionGateway } from './chirp3TranscriptionService.js';
+import { runBenchmark } from './benchmarkService.js';
 import {
   createGeminiTranscriptionGateway,
   RefinementServiceError,
@@ -21,6 +23,9 @@ config();
 const port = Number(process.env.TOKEN_SERVER_PORT || 8_787);
 const apiKey = process.env.GEMINI_API_KEY;
 const model = 'gemini-3.5-transcribe-live';
+const cloudProjectId = process.env.GOOGLE_CLOUD_PROJECT_ID || process.env.GOOGLE_CLOUD_PROJECT;
+const cloudLocation = process.env.GOOGLE_CLOUD_SPEECH_LOCATION || 'us';
+const reconciliationEnabled = process.env.RECALL_ENABLE_RECONCILIATION === 'true';
 class RequestBodyTooLargeError extends Error {}
 
 function sendJson(response: import('node:http').ServerResponse, status: number, body: unknown) {
@@ -98,6 +103,9 @@ if (!apiKey) {
 } else {
   const ai = new GoogleGenAI({ apiKey });
   const transcriptionGateway = createGeminiTranscriptionGateway(ai);
+  const chirp3Gateway = cloudProjectId
+    ? createChirp3TranscriptionGateway({ projectId: cloudProjectId, location: cloudLocation })
+    : null;
 
   const server = createServer(async (request, response) => {
     response.setHeader('Access-Control-Allow-Origin', '*');
@@ -194,6 +202,54 @@ if (!apiKey) {
         } else {
           console.error('Unable to refine uploaded audio: unexpected server error.');
           sendJson(response, 502, { code: 'REFINEMENT_FAILED', error: 'Unable to refine the recording transcript.' });
+        }
+      } finally {
+        if (temporaryDirectory) {
+          await rm(temporaryDirectory, { recursive: true, force: true });
+        }
+      }
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/benchmark') {
+      const rawContentType = request.headers['content-type'];
+      const contentTypeHeader = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+      const contentType = normalizeContentType(contentTypeHeader);
+      console.info(
+        `[benchmark] received content-type=${contentType || 'missing'} content-length=${request.headers['content-length'] || 'missing'}`,
+      );
+
+      const contentLength = Number(request.headers['content-length']);
+      if (Number.isFinite(contentLength) && !isWithinTranscriptionLimit(contentLength)) {
+        sendJson(response, 413, { code: 'AUDIO_TOO_LARGE', error: 'Audio exceeds the Phase 0.5 upload limit.' });
+        return;
+      }
+
+      let temporaryDirectory: string | null = null;
+      try {
+        const audio = await readRequestBody(request);
+        const validation = validateWavRequest(contentType || undefined, audio);
+        if (!validation.valid) {
+          sendJson(response, validation.statusCode, {
+            code: validation.code,
+            error: validation.error || 'Invalid WAV audio.',
+          });
+          return;
+        }
+
+        temporaryDirectory = await mkdtemp(join(tmpdir(), 'recall-benchmark-'));
+        const temporaryFile = join(temporaryDirectory, 'recording.wav');
+        await writeFile(temporaryFile, audio);
+        const result = await runBenchmark(transcriptionGateway, chirp3Gateway, temporaryFile, {
+          includeReconciled: reconciliationEnabled,
+        });
+        sendJson(response, 200, result);
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) {
+          sendJson(response, 413, { code: 'AUDIO_TOO_LARGE', error: 'Audio exceeds the Phase 0.5 upload limit.' });
+        } else {
+          console.error('Unable to run transcription benchmark: unexpected server error.');
+          sendJson(response, 502, { code: 'BENCHMARK_FAILED', error: 'Unable to run the transcription benchmark.' });
         }
       } finally {
         if (temporaryDirectory) {
