@@ -1,6 +1,6 @@
-# Recall — Phase 0.7 project status
+# Recall — Phase 1 project status
 
-Status date: 2026-09-01
+Status date: 2026-09-04
 
 ## Completed work
 
@@ -37,13 +37,29 @@ Status date: 2026-09-01
 - Added opt-in-only reconciliation D using the shared Gemini File and candidate outputs; it is disabled by default and does not run unless explicitly enabled.
 - Added temporary benchmark output sections showing model, language configuration, status, raw transcript, and processing time independently for A/B/C/C2/D2.
 - Added independent benchmark orchestration and state tests, including provider failure isolation, D2 gating/isolation, language-context prompt contracts, shared Gemini upload cleanup, Cloud configuration failure, and reconciliation gating.
+- Added Phase 1 persistent local sessions with versioned `expo-sqlite` storage, including `sessions` and `bookmarks` tables, foreign-key cascade, and indexes for newest-first history and bookmark lookup.
+- Added app-owned durable audio storage under `Paths.document/sessions/<session-id>/audio.wav`. The finalized recorder source is copied and verified before the source is cleaned up; a failed database write never deletes the durable copy.
+- Added product session transcript layers: live finalized transcript, raw A transcript, repaired D2 transcript, and explicit authoritative fallback selection (D2 > A > live).
+- Added a narrow `/process` server boundary for normal A → D2 processing. The existing `/benchmark` A/B/C/C2/D2/D tooling remains separate and is no longer triggered by ordinary recordings.
+- Added home history, `/record`, and `/session/[id]` routes. Session detail provides offline WAV playback, timeline seeking, bookmark seeking, rename, delete confirmation, and missing-audio errors.
+- Added `expo-sqlite`, `expo-file-system`, `expo-audio`, and the required `expo-asset` peer dependency. The Android development client was regenerated and rebuilt for these native modules.
 
 ## Current architecture
 
 ```text
-src/app/index.tsx
+src/app/index.tsx (home/history)
         │
-        ▼
+        ├── /record → RecordingFlow → useRecordingSession
+        │                              ├── useAudioRecorder (single local recorder)
+        │                              │       ├── durable source file
+        │                              │       └── raw PCM stream callback
+        │                              ├── LiveTranscriptionSessionManager
+        │                              │       ├── GeminiTokenClient → server/index.ts → GEMINI_API_KEY
+        │                              │       └── reconnect/rotation/live transcript
+        │                              └── sessionAudioStorage → SessionProvider → SQLite
+        │
+        └── /session/[id] → local SQLite session + expo-audio player
+
 useRecordingSession
         ├── useAudioRecorder (single local recorder)
         │       ├── local file
@@ -60,12 +76,14 @@ useRecordingSession
 After local capture finalizes:
 
 ```text
-Stopped screen
-        ├── existing live finalized transcript
-        └── asynchronous RefinedTranscriptionClient → server/index.ts /transcribe
+finalize native WAV
+        ├── copy to document/sessions/<session-id>/audio.wav
+        ├── persist session + bookmarks in SQLite
+        └── asynchronous SessionProcessingClient → server/index.ts /process
                 ├── temporary local WAV
                 ├── Gemini Files API upload
-                ├── gemini-3.5-transcribe Interactions request
+                ├── gemini-3.5-transcribe (A)
+                ├── gemini-3.5-flash-lite audio-grounded repair (D2, only after A)
                 ├── best-effort Gemini File deletion
                 └── temporary local WAV cleanup
 ```
@@ -105,6 +123,11 @@ Recall's intended product direction is worldwide multilingual capture and memory
 15. Gemini A, C, C2, D2, and optional D reuse a single uploaded Gemini File per benchmark request. D2 is invoked only after A succeeds and receives A's transcript plus the original audio. The server deletes that remote file best-effort and always removes its local temporary directory.
 16. Transcript repair is a replaceable provider seam, not a prose-editing layer. Its generic prompt treats audio as authoritative, preserves code-switching, prohibits translation/summarization/paraphrase, and treats language/locale context as advisory.
 17. Reconciliation is disabled by default and is only attempted when explicitly enabled after A, B, and C have all independently succeeded. C2 and D2 are separate comparison results and do not silently replace C or A. No automatic script normalization, translation, scoring, or reference correction is performed.
+18. Phase 1 creates the local session record only after the native WAV is finalized and copied into an app-owned session directory. Remote processing is never required for recording success.
+19. SQLite schema versioning starts at `user_version = 1`; migrations are additive from this point and the database is never recreated on launch.
+20. The normal post-recording path uses `/process` for A followed by D2. The experimental benchmark matrix remains available but is not part of normal session history or presentation.
+21. The authoritative transcript is selected explicitly as repaired D2 > raw A > live finalized capture. Lower-level transcript layers remain persisted for comparison.
+22. Session deletion removes database metadata first, then only the target session audio directory. If filesystem cleanup fails, the app reports the recoverable cleanup issue instead of deleting unrelated files.
 
 ## Validation status
 
@@ -112,9 +135,9 @@ Passed in the current workspace:
 
 - `npm run typecheck`
 - `npm run server:check`
-- `npm test` — 13 files, 76 tests
+- `npm test` — 16 files, 88 tests
 - `npm run lint`
-- `npx expo-doctor` — 16/18 checks; the existing warnings are the intentionally committed native project containing app.json Prebuild-managed fields and patch-version mismatches in the Expo SDK 57 dependency set.
+- `npx expo-doctor` — 16/18 checks; the remaining warnings are the intentionally committed native project containing app.json Prebuild-managed fields and existing patch-version mismatches in the Expo SDK 57 dependency set.
 - `npx expo prebuild --no-install` — Android native project generated
 - Generated Android manifest contains `android.permission.RECORD_AUDIO`.
 - Phase 0 physical result — Test B English passed with live interim/final transcription.
@@ -124,6 +147,9 @@ Passed in the current workspace:
 - Phase 0.5/0.7 static result — `npm run typecheck`, `npm run server:check`, `npm test` (13 files, 76 tests), and `npm run lint` passed. `npx expo-doctor` reports 16/18 checks passed; its existing warnings are the committed native project containing app.json Prebuild-managed fields and patch-version mismatches in the Expo SDK 57 dependency set.
 - Phase 0.7 implementation controls — the generic D2 repair prompt passed language-agnostic/advisory-context tests; D2 receives the original audio plus A only, runs only after A succeeds, and remains isolated when D2 fails. The known-good English and deliberately corrupted-baseline controls passed through deterministic provider seams; these are repair-contract tests, not claims about live model recognition quality.
 - Phase 0.7 physical status — no new physical recording has been performed. The stopped-screen benchmark is ready to compare LIVE, A, C, C2, and D2; B remains intentionally unavailable and D remains disabled.
+- Phase 1 static result — `npm run typecheck`, `npm run server:check`, `npm run lint`, and `npm test` passed with 16 test files and 88 tests. Repository tests cover schema initialization/versioning, create/list/reload, rename/delete/bookmark persistence, processing failure preservation, and D2 > A > live authority selection.
+- Phase 1 native result — `npx expo prebuild --no-install` regenerated the Android project for `expo-sqlite`, `expo-file-system`, `expo-audio`, and `expo-asset`. `npx expo run:android --device` completed successfully after using Java 17 and `C:\tmp` for the known Windows Gradle loopback workaround; the debug APK installed and Metro bundled the new routes on `SM_X516B`.
+- Phase 1 physical status — no new recording was performed by this coding session. The tablet is ready for the manual local-session persistence sequence; playback, SQLite restart persistence, rename, and delete remain device verification tasks.
 
 Runtime verification attempted on Windows:
 
@@ -172,12 +198,11 @@ Version control:
 - Recall has its own Git repository at the project root on `main`; it is separate from the unrelated parent repository under `C:\Users\Mouhssine`.
 - The public remote is `https://github.com/MouhssineElBoumshouli/recall.git`. The first milestone commit contains the Phase 0 source, documentation, tests, and reproducible Android native project while excluding local credentials, recordings, dependencies, and build output.
 
-Not yet validated here:
+Remaining physical validation:
 
-- Native microphone permission prompt and denial flow.
-- Actual PCM callback payload and local-file finalization from Android/iOS hardware.
-- Phase 0.6 A/B/C provider comparison against a fresh physical WAV on Android.
-- Remote Gemini File deletion behavior under an actual refinement request; the cleanup path is unit-tested and logs no secret or audio content.
+- Phase 1 session persistence after a real Android stop/restart cycle.
+- Offline playback, pause, timeline seeking, and bookmark seeking from a persisted WAV.
+- Rename and delete persistence after app restart.
 - App backgrounding, OS interruptions, Bluetooth routes, phone calls, and low-storage behavior.
 
 ## Known issues and limits
@@ -188,8 +213,8 @@ Not yet validated here:
 - The token endpoint is intentionally local, unauthenticated, and permissive-CORS. It is not deployable as-is.
 - The fallback timestamp is based on when a Gemini event is received, not word-level audio timing.
 - During a connection outage, only a small bounded number of chunks are held for replay. A prolonged outage may produce gaps in the live transcript while the source recording remains intact.
-- There is no local session database, playback control, transcript export, or durable refinement history.
-- The current UI is a Phase 0 validation surface, not the final Recall navigation or accessibility pass.
+- Phase 1 now has local session persistence, offline playback, and durable transcript layers; transcript export and cloud sync remain out of scope.
+- The current UI is intentionally functional and editorial, not the final Recall navigation or accessibility pass.
 - Phase 0.5 refinement has now been benchmarked on one physical natural Darija/French/English sample, with meaningful but insufficient Darija improvement. Results remain current-session only.
 - Phase 0.6/0.7 benchmark results are current-session only; A/B/C/C2 remain raw independent outputs, D2 is a separate repair of A, and D is opt-in experimental only.
 - The first Phase 0.6 C control matrix could not evaluate audio understanding because the configured Gemini account returned HTTP 429 free-tier quota exhaustion for `gemini-3.7-flash` on text-only, File URI, inline-audio, SDK, and raw REST requests. Restore eligible quota or billing/access before attempting another C benchmark; do not treat this as a Darija-quality result.
@@ -199,8 +224,8 @@ Not yet validated here:
 
 ## Exact next steps
 
-1. If Chirp 3 is required, enable Cloud Speech-to-Text V2, billing, and ADC as documented in `README.md`, set the local server variables, and restart the server.
-2. Restart the local token server and reload the existing Android development build through Metro; no native rebuild is needed for the D2 JavaScript/server changes. Run one fresh 20–30 second multilingual sample. The current local benchmark defaults to hinted context (`RECALL_BENCHMARK_LANGUAGE_MODE=hinted`); set it to `auto` and restart the server for the no-hints comparison.
-3. Compare LIVE, A, B, C, C2, and D2 without normalization. Confirm D2's displayed context mode, and verify D2 is based on A plus the original audio. B may remain unavailable, C may remain quota-limited, and those failures must not hide A or D2.
-4. Record duration, date, local WAV URI, backend/model/configuration, raw output, status, and processing time for each result. Add a manually corrected REFERENCE only later; do not score automatically yet.
-5. Leave reconciliation D disabled. Keep real 8.5-minute rotation and iOS verification as later Phase 0 validation work; do not treat this benchmark as a broader product milestone.
+1. On the connected Galaxy tablet, run one 10–15 second local session: grant microphone permission, record, place a bookmark, stop, and confirm the session appears in history.
+2. Close/reopen Recall with the token server unavailable. Confirm the same session remains, opens, plays/pauses/seeks offline, shows its transcript/bookmark, and reports a missing-file error gracefully if the audio is removed externally.
+3. Rename the session, close/reopen, delete it, close/reopen, and confirm deletion persists. This is the remaining Phase 1 physical validation; do not begin the next product milestone until it passes.
+4. If the Phase 0.6 benchmark is revisited later, keep Chirp 3 configuration and reconciliation D opt-in as previously documented. They are not part of normal Phase 1 session processing.
+5. Keep real 8.5-minute rotation and iOS verification as later validation work; do not treat these as a new product milestone.

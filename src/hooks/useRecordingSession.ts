@@ -9,21 +9,17 @@ import {
 import { tokenServerUrl } from '@/config';
 import { colors } from '@/design/tokens';
 import { createBookmark } from '@/services/bookmarkService';
-import { TranscriptionBenchmarkClient } from '@/services/benchmarkClient';
 import { GeminiTokenClient } from '@/services/geminiTokenClient';
 import {
   LiveTranscriptionSessionManager,
   type ManagedTranscriptEvent,
 } from '@/services/liveTranscriptionSessionManager';
-import {
-  benchmarkCompleted,
-  benchmarkFailed,
-  benchmarkStarted,
-  initialBenchmarkState,
-} from '@/services/benchmarkState';
-import { TranscriptAccumulator } from '@/services/transcriptAccumulator';
+import { persistRecordingAudio } from '@/services/sessionAudioStorage';
+import { createNewSession } from '@/services/sessionFactory';
+import { SessionProcessingClient } from '@/services/sessionProcessingClient';
+import { joinFinalTranscript, TranscriptAccumulator } from '@/services/transcriptAccumulator';
+import { useSessions } from '@/providers/SessionProvider';
 import type { Bookmark } from '@/types/bookmark';
-import type { BenchmarkState } from '@/types/benchmark';
 import type {
   RecordingDebugInfo,
   RecordingPhase,
@@ -47,6 +43,10 @@ type PermissionResult = { granted?: boolean };
 type AudioStudioPermissionModule = {
   requestPermissionsAsync?: () => Promise<PermissionResult>;
 };
+
+export interface UseRecordingSessionOptions {
+  onSessionCreated?: (sessionId: string) => void;
+}
 
 function bytesToBase64(bytes: Uint8Array): string | null {
   const base64Encoder = (globalThis as { btoa?: (value: string) => string }).btoa;
@@ -108,12 +108,13 @@ const initialDebug: RecordingDebugInfo = {
   lastError: null,
 };
 
-export function useRecordingSession() {
+export function useRecordingSession({ onSessionCreated }: UseRecordingSessionOptions = {}) {
   const {
     prepareRecording,
     startRecording: startNativeRecording,
     stopRecording: stopNativeRecording,
   } = useAudioRecorder();
+  const { createSession, updateSession } = useSessions();
   const [phase, setPhase] = useState<RecordingPhase>('idle');
   const [elapsedMs, setElapsedMs] = useState(0);
   const [connectionState, setConnectionState] = useState('idle');
@@ -124,15 +125,15 @@ export function useRecordingSession() {
   const [error, setError] = useState<string | null>(null);
   const [debug, setDebug] = useState<RecordingDebugInfo>(initialDebug);
   const [stoppedRecording, setStoppedRecording] = useState<StoppedRecording | null>(null);
-  const [benchmark, setBenchmark] = useState<BenchmarkState>(initialBenchmarkState);
 
   const phaseRef = useRef<RecordingPhase>('idle');
   const startedAtMsRef = useRef(0);
   const nativeStartedRef = useRef(false);
+  const sessionPersistedRef = useRef(false);
   const bookmarksRef = useRef<Bookmark[]>([]);
-  const benchmarkAttemptRef = useRef(0);
+  const processingAttemptRef = useRef(0);
   const [transcriptAccumulator] = useState(() => new TranscriptAccumulator());
-  const [benchmarkClient] = useState(() => new TranscriptionBenchmarkClient(tokenServerUrl));
+  const [processingClient] = useState(() => new SessionProcessingClient(tokenServerUrl));
   const [manager] = useState(
     () =>
       new LiveTranscriptionSessionManager({
@@ -185,7 +186,9 @@ export function useRecordingSession() {
 
   useEffect(
     () => () => {
-      benchmarkAttemptRef.current += 1;
+      if (!sessionPersistedRef.current) {
+        processingAttemptRef.current += 1;
+      }
       void (async () => {
         if (nativeStartedRef.current) {
           try {
@@ -201,34 +204,42 @@ export function useRecordingSession() {
     [manager, stopNativeRecording],
   );
 
-  const runBenchmark = useCallback(
-    async (fileUri: string | null, attempt: number) => {
+  const runProcessing = useCallback(
+    async (fileUri: string | null, sessionId: string | null, attempt: number, liveTranscript: string) => {
       try {
-        if (!fileUri) {
-          if (attempt === benchmarkAttemptRef.current) {
-            setBenchmark((current) => benchmarkFailed(current, 'The local audio file is unavailable.'));
-          }
+        if (!fileUri || !sessionId) {
           return;
         }
 
-        const result = await benchmarkClient.run(fileUri);
-        if (attempt !== benchmarkAttemptRef.current) {
+        const result = await processingClient.process(fileUri);
+        if (attempt !== processingAttemptRef.current) {
           return;
         }
-        setBenchmark(benchmarkCompleted(result));
-      } catch (benchmarkError) {
-        if (attempt !== benchmarkAttemptRef.current) {
+        const rawFinalTranscript = result.rawFinalTranscript;
+        const repairedTranscript = result.repairedTranscript;
+        const hasUsableTranscript = Boolean(rawFinalTranscript?.trim() || repairedTranscript?.trim() || liveTranscript.trim());
+        await updateSession(sessionId, {
+          liveTranscript,
+          rawFinalTranscript,
+          repairedTranscript,
+          transcriptStatus: hasUsableTranscript ? 'succeeded' : 'failed',
+          processingError: result.error,
+        });
+      } catch (processingError) {
+        if (attempt !== processingAttemptRef.current) {
           return;
         }
-        setBenchmark((current) =>
-          benchmarkFailed(
-            current,
-            benchmarkError instanceof Error ? benchmarkError.message : 'Transcription benchmark failed.',
-          ),
-        );
+        const message = processingError instanceof Error ? processingError.message : 'Transcription processing failed.';
+        if (sessionId) {
+          await updateSession(sessionId, {
+            liveTranscript,
+            transcriptStatus: liveTranscript.trim() ? 'succeeded' : 'failed',
+            processingError: message,
+          }).catch(() => undefined);
+        }
       }
     },
-    [benchmarkClient],
+    [processingClient, updateSession],
   );
 
   const start = useCallback(async () => {
@@ -240,8 +251,8 @@ export function useRecordingSession() {
     setPhase('starting');
     setError(null);
     setStoppedRecording(null);
-    benchmarkAttemptRef.current += 1;
-    setBenchmark({ ...initialBenchmarkState });
+    sessionPersistedRef.current = false;
+    processingAttemptRef.current += 1;
     transcriptAccumulator.reset();
     bookmarksRef.current = [];
     setFinalizedSegments([]);
@@ -309,6 +320,8 @@ export function useRecordingSession() {
     setError(null);
     let recording: AudioRecording | null = null;
     let stopError: string | null = null;
+    let durableAudioUri: string | null = null;
+    let sessionId: string | null = null;
 
     try {
       if (nativeStartedRef.current) {
@@ -322,26 +335,59 @@ export function useRecordingSession() {
     }
 
     const nextDebug = manager.getDebugInfo();
+    const durationMs = recording?.durationMs || Math.max(0, Date.now() - startedAtMsRef.current);
+    const recordedAt = new Date(startedAtMsRef.current).toISOString();
+    const nextFinalizedSegments = transcriptAccumulator.snapshot().finalizedSegments;
+    const nextBookmarks = bookmarksRef.current;
+    const liveTranscript = joinFinalTranscript(nextFinalizedSegments);
+
+    if (!stopError && recording?.fileUri) {
+      try {
+        sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const durableAudio = await persistRecordingAudio(recording.fileUri, sessionId);
+        durableAudioUri = durableAudio.uri;
+        const nextSession = createNewSession({
+          id: sessionId,
+          recordedAt,
+          durationMs,
+          audioUri: durableAudio.uri,
+          finalizedSegments: nextFinalizedSegments,
+          bookmarks: nextBookmarks,
+        });
+        await createSession(nextSession.session, nextSession.bookmarks);
+        sessionPersistedRef.current = true;
+      } catch (persistenceError) {
+        stopError = persistenceError instanceof Error ? persistenceError.message : 'Unable to save the local session.';
+        sessionId = null;
+      }
+    } else if (!stopError) {
+      stopError = 'Audio file finalization did not return a local file.';
+    }
+
     const nextStoppedRecording: StoppedRecording = {
       recording,
-      recordedAt: new Date(startedAtMsRef.current).toISOString(),
-      durationMs: recording?.durationMs || Math.max(0, Date.now() - startedAtMsRef.current),
-      finalizedSegments: transcriptAccumulator.snapshot().finalizedSegments,
-      bookmarks: bookmarksRef.current,
+      recordedAt,
+      durationMs,
+      finalizedSegments: nextFinalizedSegments,
+      bookmarks: nextBookmarks,
       debug: nextDebug,
+      sessionId,
+      durableAudioUri,
     };
     setStoppedRecording(nextStoppedRecording);
     setElapsedMs(nextStoppedRecording.durationMs);
     setDebug(nextDebug);
     setConnectionState(nextDebug.connectionState);
     setError(stopError);
-    const benchmarkAttempt = benchmarkAttemptRef.current + 1;
-    benchmarkAttemptRef.current = benchmarkAttempt;
-    setBenchmark(benchmarkStarted());
-    void runBenchmark(recording?.fileUri || null, benchmarkAttempt);
+    const processingAttempt = processingAttemptRef.current + 1;
+    processingAttemptRef.current = processingAttempt;
+    if (sessionId && durableAudioUri) {
+      onSessionCreated?.(sessionId);
+      void runProcessing(durableAudioUri, sessionId, processingAttempt, liveTranscript);
+    }
     phaseRef.current = 'stopped';
     setPhase('stopped');
-  }, [manager, runBenchmark, stopNativeRecording, transcriptAccumulator]);
+  }, [createSession, manager, onSessionCreated, runProcessing, stopNativeRecording, transcriptAccumulator]);
 
   const addBookmark = useCallback(() => {
     if (phaseRef.current !== 'recording') {
@@ -362,8 +408,7 @@ export function useRecordingSession() {
     phaseRef.current = 'idle';
     setPhase('idle');
     setStoppedRecording(null);
-    benchmarkAttemptRef.current += 1;
-    setBenchmark({ ...initialBenchmarkState });
+    processingAttemptRef.current += 1;
     setError(null);
     setElapsedMs(0);
     setFinalizedSegments([]);
@@ -384,7 +429,6 @@ export function useRecordingSession() {
     error,
     debug,
     stoppedRecording,
-    benchmark,
     start,
     stop,
     addBookmark,

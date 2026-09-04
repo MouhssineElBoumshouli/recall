@@ -9,6 +9,7 @@ import { createChirp3TranscriptionGateway } from './chirp3TranscriptionService.j
 import { runBenchmark } from './benchmarkService.js';
 import {
   createGeminiTranscriptionGateway,
+  processSessionWavFile,
   RefinementServiceError,
   transcribeWavFile,
 } from './transcriptionService.js';
@@ -210,6 +211,54 @@ if (!apiKey) {
         } else {
           console.error('Unable to refine uploaded audio: unexpected server error.');
           sendJson(response, 502, { code: 'REFINEMENT_FAILED', error: 'Unable to refine the recording transcript.' });
+        }
+      } finally {
+        if (temporaryDirectory) {
+          await rm(temporaryDirectory, { recursive: true, force: true });
+        }
+      }
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/process') {
+      const rawContentType = request.headers['content-type'];
+      const contentTypeHeader = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+      const contentType = normalizeContentType(contentTypeHeader);
+      console.info(
+        `[process] received content-type=${contentType || 'missing'} content-length=${request.headers['content-length'] || 'missing'}`,
+      );
+
+      const contentLength = Number(request.headers['content-length']);
+      if (Number.isFinite(contentLength) && !isWithinTranscriptionLimit(contentLength)) {
+        sendJson(response, 413, { code: 'AUDIO_TOO_LARGE', error: 'Audio exceeds the Phase 1 upload limit.' });
+        return;
+      }
+
+      let temporaryDirectory: string | null = null;
+      try {
+        const audio = await readRequestBody(request);
+        const validation = validateWavRequest(contentType || undefined, audio);
+        if (!validation.valid) {
+          sendJson(response, validation.statusCode, {
+            code: validation.code,
+            error: validation.error || 'Invalid WAV audio.',
+          });
+          return;
+        }
+
+        temporaryDirectory = await mkdtemp(join(tmpdir(), 'recall-process-'));
+        const temporaryFile = join(temporaryDirectory, 'recording.wav');
+        await writeFile(temporaryFile, audio);
+        const result = await processSessionWavFile(transcriptionGateway, temporaryFile);
+        sendJson(response, 200, result);
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) {
+          sendJson(response, 413, { code: 'AUDIO_TOO_LARGE', error: 'Audio exceeds the Phase 1 upload limit.' });
+        } else if (error instanceof RefinementServiceError) {
+          sendJson(response, 502, { code: error.code, error: error.message });
+        } else {
+          console.error('Unable to process saved session audio: unexpected server error.');
+          sendJson(response, 502, { code: 'SESSION_PROCESSING_FAILED', error: 'Unable to process the session transcript.' });
         }
       } finally {
         if (temporaryDirectory) {

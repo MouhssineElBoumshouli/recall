@@ -37,4 +37,6 @@ export interface StoppedRecording {
   finalizedSegments: TranscriptSegment[];
   bookmarks: Bookmark[];
   debug: RecordingDebugInfo;
+  sessionId: string | null;
+  durableAudioUri: string | null;
 }

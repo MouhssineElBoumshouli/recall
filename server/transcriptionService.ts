@@ -33,6 +33,12 @@ export interface RefinedTranscriptionOptions {
   customVocabulary?: string[];
 }
 
+export interface SessionProcessingResult {
+  rawFinalTranscript: string | null;
+  repairedTranscript: string | null;
+  error: string | null;
+}
+
 export interface TranscriptRepairProvider {
   repair(
     fileUri: string,
@@ -344,6 +350,61 @@ export async function transcribeWavFile(
         await gateway.delete(uploadedFile.name);
       } catch {
         console.error('Unable to delete the temporary Gemini audio upload.');
+      }
+    }
+  }
+}
+
+export async function processSessionWavFile(
+  gateway: GeminiTranscriptionGateway,
+  filePath: string,
+  languageContext?: TranscriptLanguageContext,
+): Promise<SessionProcessingResult> {
+  let uploadedFile: UploadedAudioFile | null = null;
+
+  try {
+    try {
+      uploadedFile = await gateway.upload(filePath, WAV_MIME_TYPE);
+    } catch {
+      throw new RefinementServiceError('GEMINI_UPLOAD_FAILED', 'Gemini Files upload failed.');
+    }
+    if (!uploadedFile.uri) {
+      throw new RefinementServiceError('GEMINI_UPLOAD_FAILED', 'Gemini Files upload returned no audio URI.');
+    }
+
+    let rawFinalTranscript: string | null = null;
+    let error: string | null = null;
+    try {
+      rawFinalTranscript = await gateway.transcribe(uploadedFile.uri, uploadedFile.mimeType || WAV_MIME_TYPE, {
+        customVocabulary: [],
+      });
+    } catch {
+      error = 'Gemini transcription failed.';
+    }
+
+    let repairedTranscript: string | null = null;
+    if (rawFinalTranscript?.trim()) {
+      try {
+        repairedTranscript = await gateway.repair(
+          uploadedFile.uri,
+          uploadedFile.mimeType || WAV_MIME_TYPE,
+          rawFinalTranscript,
+          languageContext,
+        );
+      } catch {
+        error = error || 'Audio-grounded transcript repair failed.';
+      }
+    } else if (!error) {
+      error = 'Gemini transcription returned no text.';
+    }
+
+    return { rawFinalTranscript, repairedTranscript, error };
+  } finally {
+    if (uploadedFile?.name) {
+      try {
+        await gateway.delete(uploadedFile.name);
+      } catch {
+        console.error('Unable to delete the temporary Gemini session upload.');
       }
     }
   }

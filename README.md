@@ -1,6 +1,6 @@
-# Recall — Phase 0.7
+# Recall — Phase 1
 
-Recall is a mobile-first multilingual memory and transcription prototype for worldwide lecture, meeting, interview, study, conversation, and brainstorming capture. Phase 0 validated continuous local recording and live transcription. Phase 0.5 added post-recording file transcription. Phase 0.6 added controlled backend comparisons, and Phase 0.7 adds an optional language-agnostic, audio-grounded repair pass. Moroccan Darija is currently the difficult stress-test benchmark, not Recall's target language.
+Recall is a mobile-first multilingual memory and transcription prototype for worldwide lecture, meeting, interview, study, conversation, and brainstorming capture. Phase 0 validated continuous local recording and live transcription. Phase 0.5 added post-recording file transcription, Phase 0.6 added controlled backend comparisons, and Phase 0.7 added an optional language-agnostic, audio-grounded repair pass. Phase 1 turns the transient spike into persistent local sessions. Moroccan Darija remains a difficult stress-test benchmark, not Recall's target language.
 
 ## What this prototype proves
 
@@ -15,8 +15,12 @@ Recall is a mobile-first multilingual memory and transcription prototype for wor
 - After recording stops, the saved WAV can be refined asynchronously through the local server while the live transcript and local audio remain available immediately.
 - The same saved WAV can be compared across Gemini Transcribe, Cloud Speech-to-Text V2 Chirp 3 (`ar-MA`), Gemini 3.7 Flash audio understanding, the temporary Gemini 3.5 Flash-Lite comparison, and a separate audio-grounded repair of A without overwriting any output.
 - The repair layer is language-agnostic by default. Optional session language/locale hints are advisory and preserve code-switching rather than forcing a locale or script.
+- Recordings, bookmarks, and transcript layers persist in a versioned local SQLite database across app restarts.
+- Each saved WAV is copied into an app-owned `document/sessions/<session-id>/audio.wav` directory before the session is inserted into SQLite.
+- The home screen lists saved sessions offline. Session detail supports local playback, seeking, bookmarks, rename, and delete without Gemini or the token server.
+- Normal session processing runs only the product A → D2 path through `POST /process`; the Phase 0 benchmark matrix remains separate development tooling and is not shown in the normal UI.
 
-This is deliberately not the full Recall product. There is no login, cloud persistence, playback screen, summarization, embeddings, search, cross-session Q&A, sharing, or settings system.
+This is deliberately not the full Recall product. There is no login, cloud persistence, summarization, embeddings, search, cross-session Q&A, sharing, or settings system.
 
 ## Requirements
 
@@ -77,7 +81,7 @@ Verify it locally with:
 curl http://127.0.0.1:8787/health
 ```
 
-The expected response is `{"ok":true}`. `POST /token` mints a single-use ephemeral token constrained to the transcribe-live model and text transcription configuration. `POST /transcribe` remains the Phase 0.5 single-backend endpoint. `POST /benchmark` accepts one raw WAV body and runs the Phase 0.6/0.7 comparison; both endpoints are local-development-only and do not retain uploaded audio on the server.
+The expected response is `{"ok":true}`. `POST /token` mints a single-use ephemeral token constrained to the transcribe-live model and text transcription configuration. `POST /process` is the normal Phase 1 post-recording path for A → D2 processing. `POST /transcribe` remains the Phase 0.5 single-backend endpoint, and `POST /benchmark` accepts one raw WAV body for the Phase 0.6/0.7 comparison; all audio-processing endpoints are local-development-only and do not retain uploaded audio on the server.
 
 ### Optional Chirp 3 setup
 
@@ -164,12 +168,25 @@ local WAV → POST /benchmark → one temporary server file
 
 The mobile app never receives or stores the long-lived Gemini API key. `GeminiTokenClient` talks to the small `/token` boundary, and `GeminiLiveTranscription` uses the returned ephemeral token for a direct WebSocket connection. The session manager owns connection state, reconnect backoff, connection IDs, generation numbers, and timestamp conversion. The recording hook owns application recording state and starts/stops only one native recorder.
 
-The refinement and benchmark paths are separate from live transcription. After capture stops, the mobile app posts the finalized local WAV once to `/benchmark`. The server validates the WAV, writes it to a temporary directory, shares one `ai.files.upload` result between Gemini A/C/C2/D2/D, calls Cloud V2 directly for B, runs D2 only after A succeeds using A's text plus the original audio, attempts to delete the temporary Gemini File, and removes its local temporary directory in a `finally` block. Results are returned independently with status, model, language configuration, raw transcript, and processing time. The client does not receive the long-lived Gemini key or Cloud credentials.
+The product session path is separate from live transcription. After capture stops, the app first copies the finalized WAV into its session directory and inserts the session plus bookmarks into SQLite. It then posts that durable WAV to `/process`. The server validates the WAV, uses one temporary Gemini File for A (`gemini-3.5-transcribe`) and D2 (`gemini-3.5-flash-lite` repair), deletes the remote File best-effort, and removes its local temporary directory in a `finally` block. A and D2 are persisted separately; the authoritative transcript is repaired D2 when available, otherwise A, otherwise live finalized text. The client does not receive the long-lived Gemini key or Cloud credentials.
+
+The Phase 0.6/0.7 benchmark remains available through `POST /benchmark` and its client/service modules for controlled research runs. It is intentionally not part of the normal session history or product presentation.
 
 ## Project structure
 
-- `src/app/index.tsx` — minimal IDLE, RECORDING, and stopped-result UI.
-- `src/hooks/useRecordingSession.ts` — one-source-of-truth audio recording hook and screen-facing state.
+- `src/app/index.tsx` — offline home/history screen.
+- `src/app/record.tsx` — recording route.
+- `src/app/session/[id].tsx` — persistent session detail, offline player, transcript, bookmarks, rename, and delete.
+- `src/components/RecordingFlow.tsx` — one-source-of-truth recording UI and stop handoff.
+- `src/hooks/useRecordingSession.ts` — one-source-of-truth audio recording hook and session persistence handoff.
+- `src/providers/SessionProvider.tsx` — app-wide local session repository access and history refresh.
+- `src/services/sessionRepository.ts` — SQLite schema, migration, mapping, and repository seam.
+- `src/services/sqliteSessionRepository.ts` — Expo SQLite database adapter.
+- `src/services/sessionAudioStorage.ts` — durable app-owned WAV copy and target-directory cleanup.
+- `src/services/sessionFactory.ts` — session/title/bookmark creation from a completed recording.
+- `src/services/sessionProcessingClient.ts` — client for the narrow A → D2 `/process` endpoint.
+- `src/services/transcriptAuthority.ts` — explicit D2 > A > live transcript fallback logic.
+- `src/types/session.ts` — persistent session, bookmark, status, and transcript-layer types.
 - `src/services/liveTranscriptionSessionManager.ts` — reconnect/rotation/session lifecycle.
 - `src/services/geminiLiveTranscription.ts` — constrained Gemini Live WebSocket adapter.
 - `src/services/geminiTokenClient.ts` — mobile client for the token server.
@@ -184,12 +201,12 @@ The refinement and benchmark paths are separate from live transcription. After c
 - `src/services/bookmarkService.ts` — timestamped bookmark creation.
 - `src/types/` — transcript, bookmark, and stopped-recording types.
 - `src/design/tokens.ts` — small warm/editorial visual token layer.
-- `server/index.ts` — local Node/TypeScript token and post-recording refinement server.
+- `server/index.ts` — local Node/TypeScript token, session-processing, refinement, and benchmark server.
 - `server/transcriptionService.ts` — current @google/genai Files API and Interactions adapters for A and audio-grounded repair D2.
 - `server/chirp3TranscriptionService.ts` — optional Cloud Speech-to-Text V2 `Recognize` adapter for `chirp_3` + `ar-MA`.
 - `server/benchmarkService.ts` — independent A/B/C/C2/D2 orchestration and opt-in D reconciliation.
 - `server/wavValidation.ts` — bounded RIFF/WAVE PCM16 validation and metadata extraction.
-- `tests/` — hardware-independent logic tests.
+- `tests/` — hardware-independent logic, repository, transcript authority, and provider tests.
 
 ## Checks
 
@@ -209,8 +226,8 @@ These validate TypeScript, server TypeScript, pure session/transcript/bookmark/r
 - The current environment's Node `22.12.0` is slightly below the engine range preferred by some installed React Native packages.
 - Reconnect buffering is intentionally bounded. Chunks dropped while Gemini is unavailable are not replayed; the local audio file continues to capture.
 - Transcript timestamps are receive-time/utterance-level approximations because live transcription events do not currently expose a complete word-level audio timeline in this adapter.
-- No local recording playback or durable session index has been added yet.
-- Phase 0.5 refinement is current-session only; there is no durable transcript/refinement database or upload history.
+- SQLite stores one local database with sessions and bookmarks; cloud sync and multi-device history are not implemented.
+- Durable local audio and metadata are product-session scoped, while remote processing/upload history is intentionally not retained on the server.
 - Phase 0.6/0.7 benchmark results are current-session only and intentionally unscored. A/B/C/C2 outputs remain raw and separate; D2 is a separate repair of A, not a replacement for it. No script normalization, translation, prose cleanup, or automatic reference scoring is performed.
 - D2 uses a generic audio-grounded repair instruction with empty/unknown language context by default in the provider seam. The local benchmark server defaults to advisory hinted context only to evaluate the current difficult multilingual sample; set `RECALL_BENCHMARK_LANGUAGE_MODE=auto` for the no-hints comparison.
 - Chirp 3 requires a Google Cloud project, billing, enabled Speech-to-Text API, and ADC. Its `ar-MA` support is documented as Preview and must be manually validated against the same samples.
@@ -218,6 +235,20 @@ These validate TypeScript, server TypeScript, pure session/transcript/bookmark/r
 - If remote Gemini File deletion fails, the uploaded resource remains subject to the Gemini service's normal lifecycle; the local temporary WAV is still removed.
 - The local token endpoint uses permissive CORS and has no user authentication; it is for development only.
 - The UI is intentionally functional and lightly styled. Accessibility, error copy, and visual polish need a dedicated pass after the native pipeline is proven.
+
+## Phase 1 local-session verification
+
+The first physical-device verification should use the connected Android development build and no network dependency for browsing:
+
+1. Start Metro and the local token server only if testing a new recording or post-recording processing.
+2. Open Recall and tap `New recording`.
+3. Record 10–15 seconds, place a bookmark, and stop. The WAV is finalized and copied before the session is inserted into SQLite.
+4. Confirm the session appears on the home history. Processing may still be shown as pending while A → D2 runs.
+5. Close and reopen the app. The session should remain visible without the server.
+6. Open it, play/pause, tap the timeline to seek, tap a bookmark, and read the saved authoritative transcript.
+7. Rename the session, close/reopen, then delete it and close/reopen again to confirm deletion persists.
+
+The local `expo-sqlite`, `expo-file-system`, `expo-audio`, and `expo-asset` modules are native dependencies. Changes to their installation or app configuration require `npx expo prebuild` followed by a new development-client build; JavaScript-only changes can use Metro reload after the client is installed.
 
 ## Phase 0.7 benchmark
 

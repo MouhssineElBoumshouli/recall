@@ -5,6 +5,7 @@ import {
   buildTranscriptRepairInstruction,
   GeminiInteractionError,
   RefinementServiceError,
+  processSessionWavFile,
   transcribeWavFile,
   type GeminiTranscriptionGateway,
 } from '../server/transcriptionService';
@@ -324,5 +325,80 @@ describe('transcribeWavFile', () => {
     });
     expect(request.input[0].text).toContain('A baseline transcript');
     expect(request.input[0].text).not.toContain('C2 transcript');
+  });
+});
+
+describe('processSessionWavFile', () => {
+  it('runs product processing as A followed by D2 and preserves both layers', async () => {
+    const gateway: GeminiTranscriptionGateway = {
+      upload: vi.fn().mockResolvedValue({ name: 'files/session', uri: 'https://files.example/session', mimeType: 'audio/wav' }),
+      transcribe: vi.fn().mockResolvedValue('Raw A transcript.'),
+      understand: vi.fn(),
+      repair: vi.fn().mockResolvedValue('Repaired D2 transcript.'),
+      delete: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await expect(processSessionWavFile(gateway, 'temporary.wav')).resolves.toEqual({
+      rawFinalTranscript: 'Raw A transcript.',
+      repairedTranscript: 'Repaired D2 transcript.',
+      error: null,
+    });
+    expect(gateway.transcribe).toHaveBeenCalledTimes(1);
+    expect(gateway.repair).toHaveBeenCalledWith(
+      'https://files.example/session',
+      'audio/wav',
+      'Raw A transcript.',
+      undefined,
+    );
+    expect(gateway.delete).toHaveBeenCalledWith('files/session');
+  });
+
+  it('keeps A when repair fails and does not make processing failure erase it', async () => {
+    const gateway: GeminiTranscriptionGateway = {
+      upload: vi.fn().mockResolvedValue({ name: 'files/session', uri: 'https://files.example/session' }),
+      transcribe: vi.fn().mockResolvedValue('Raw A transcript.'),
+      understand: vi.fn(),
+      repair: vi.fn().mockRejectedValue(new Error('repair unavailable')),
+      delete: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await expect(processSessionWavFile(gateway, 'temporary.wav')).resolves.toEqual({
+      rawFinalTranscript: 'Raw A transcript.',
+      repairedTranscript: null,
+      error: 'Audio-grounded transcript repair failed.',
+    });
+  });
+
+  it('does not attempt D2 when A fails, while cleaning the temporary upload', async () => {
+    const gateway: GeminiTranscriptionGateway = {
+      upload: vi.fn().mockResolvedValue({ name: 'files/session', uri: 'https://files.example/session' }),
+      transcribe: vi.fn().mockRejectedValue(new Error('transcription unavailable')),
+      understand: vi.fn(),
+      repair: vi.fn(),
+      delete: vi.fn().mockResolvedValue(undefined),
+    };
+
+    await expect(processSessionWavFile(gateway, 'temporary.wav')).resolves.toEqual({
+      rawFinalTranscript: null,
+      repairedTranscript: null,
+      error: 'Gemini transcription failed.',
+    });
+    expect(gateway.repair).not.toHaveBeenCalled();
+    expect(gateway.delete).toHaveBeenCalledWith('files/session');
+  });
+
+  it('does not expose the gateway or credentials in its product result', async () => {
+    const gateway: GeminiTranscriptionGateway = {
+      upload: vi.fn().mockRejectedValue(new Error('api_key=secret-value')),
+      transcribe: vi.fn(),
+      understand: vi.fn(),
+      repair: vi.fn(),
+      delete: vi.fn(),
+    };
+
+    await expect(processSessionWavFile(gateway, 'temporary.wav')).rejects.toMatchObject({
+      code: 'GEMINI_UPLOAD_FAILED',
+      message: 'Gemini Files upload failed.',
+    });
   });
 });
