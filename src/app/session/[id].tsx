@@ -84,10 +84,7 @@ export default function SessionDetailScreen() {
 
   useEffect(() => {
     void setAudioModeAsync({ playsInSilentMode: true }).catch(() => undefined);
-    return () => {
-      player.pause();
-    };
-  }, [player]);
+  }, []);
 
   const audioAvailable = useMemo(
     () => Boolean(detail && isAudioFileAvailable(detail.session.audioUri)),
