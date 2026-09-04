@@ -3,6 +3,7 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { colors, displayFont, layout, radii, spacing, typography } from '@/design/tokens';
 import { useSessions } from '@/providers/SessionProvider';
+import { getPreferredTranscript } from '@/services/transcriptPreference';
 import type { RecallSession } from '@/types/session';
 import { formatElapsedMs } from '@/utils/time';
 
@@ -30,6 +31,8 @@ function Wordmark() {
 }
 
 function SessionRow({ session, onPress }: { session: RecallSession; onPress: () => void }) {
+  const preferredTranscript = getPreferredTranscript(session);
+
   return (
     <Pressable
       accessibilityRole="button"
@@ -45,7 +48,7 @@ function SessionRow({ session, onPress }: { session: RecallSession; onPress: () 
         <Text style={styles.sessionStatus}>
           {session.transcriptStatus === 'processing' ? 'Processing transcript…' :
             session.transcriptStatus === 'failed' ? 'Transcript processing needs attention' :
-              session.authoritativeTranscript ? 'Transcript saved' : 'Audio saved'}
+              preferredTranscript.text ? 'Transcript saved' : 'Audio saved'}
         </Text>
       </View>
       <Text style={styles.chevron}>›</Text>

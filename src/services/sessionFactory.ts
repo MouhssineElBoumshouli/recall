@@ -1,5 +1,5 @@
 import { joinFinalTranscript } from '@/services/transcriptAccumulator';
-import { selectAuthoritativeTranscript } from '@/services/transcriptAuthority';
+import { resolvePreferredTranscript } from '@/services/transcriptPreference';
 import type { Bookmark } from '@/types/bookmark';
 import type { RecallSession, SessionBookmark } from '@/types/session';
 import type { TranscriptSegment } from '@/types/transcript';
@@ -28,7 +28,7 @@ export function createNewSession(input: NewSessionInput): {
 } {
   const id = input.id || createSessionId();
   const liveTranscript = joinFinalTranscript(input.finalizedSegments);
-  const authoritative = selectAuthoritativeTranscript({
+  const preferred = resolvePreferredTranscript({
     liveTranscript,
     rawFinalTranscript: null,
     repairedTranscript: null,
@@ -49,12 +49,12 @@ export function createNewSession(input: NewSessionInput): {
       liveTranscript,
       rawFinalTranscript: null,
       repairedTranscript: null,
-      authoritativeTranscript: authoritative.text,
-      authoritativeTranscriptSource: authoritative.source,
+      preferredTranscript: preferred.text,
+      preferredTranscriptSource: preferred.source,
+      preferredTranscriptSourceOverride: null,
       languageContext: null,
       processingError: null,
     },
     bookmarks: input.bookmarks.map((bookmark) => ({ ...bookmark, sessionId: id })),
   };
 }
-

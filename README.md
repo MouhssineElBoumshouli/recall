@@ -208,7 +208,7 @@ local WAV → POST /benchmark → one temporary server file
 
 The mobile app never receives or stores the long-lived Gemini API key. `GeminiTokenClient` talks to the small `/token` boundary, and `GeminiLiveTranscription` uses the returned ephemeral token for a direct WebSocket connection. The session manager owns connection state, reconnect backoff, connection IDs, generation numbers, and timestamp conversion. The recording hook owns application recording state and starts/stops only one native recorder.
 
-The product session path is separate from live transcription. After capture stops, the app first copies the finalized WAV into its session directory and inserts the session plus bookmarks into SQLite. It then posts that durable WAV to `/process`. The server validates the WAV, uses one temporary Gemini File for A (`gemini-3.5-transcribe`) and D2 (`gemini-3.5-flash-lite` repair), deletes the remote File best-effort, and removes its local temporary directory in a `finally` block. A and D2 are persisted separately; the authoritative transcript is repaired D2 when available, otherwise A, otherwise live finalized text. The client does not receive the long-lived Gemini key or Cloud credentials.
+The product session path is separate from live transcription. After capture stops, the app first copies the finalized WAV into its session directory and inserts the session plus bookmarks into SQLite. It then posts that durable WAV to `/process`. The server validates the WAV, uses one temporary Gemini File for A (`gemini-3.5-transcribe`) and D2 (`gemini-3.5-flash-lite` repair), deletes the remote File best-effort, and removes its local temporary directory in a `finally` block. The live, raw-final A, and repaired D2 transcript layers are persisted separately. Recall exposes a preferred transcript for downstream product use, currently preferring repaired D2, then A, then live finalized text. That is a replaceable default preference, not a ground-truth claim; the client does not receive the long-lived Gemini key or Cloud credentials.
 
 The Phase 0.6/0.7 benchmark remains available through `POST /benchmark` and its client/service modules for controlled research runs. It is intentionally not part of the normal session history or product presentation.
 
@@ -226,7 +226,7 @@ The Phase 0.6/0.7 benchmark remains available through `POST /benchmark` and its 
 - `src/services/sessionFactory.ts` — session/title/bookmark creation from a completed recording.
 - `src/services/sessionProcessingClient.ts` — client for the narrow A → D2 `/process` endpoint.
 - `src/services/sessionSnapshot.ts` — ordered local-repository initialization and history snapshot loading.
-- `src/services/transcriptAuthority.ts` — explicit D2 > A > live transcript fallback logic.
+- `src/services/transcriptPreference.ts` — preferred transcript resolution and the downstream accessor for the replaceable D2 > A > live default.
 - `src/types/session.ts` — persistent session, bookmark, status, and transcript-layer types.
 - `src/services/liveTranscriptionSessionManager.ts` — reconnect/rotation/session lifecycle.
 - `src/services/geminiLiveTranscription.ts` — constrained Gemini Live WebSocket adapter.
@@ -247,7 +247,7 @@ The Phase 0.6/0.7 benchmark remains available through `POST /benchmark` and its 
 - `server/chirp3TranscriptionService.ts` — optional Cloud Speech-to-Text V2 `Recognize` adapter for `chirp_3` + `ar-MA`.
 - `server/benchmarkService.ts` — independent A/B/C/C2/D2 orchestration and opt-in D reconciliation.
 - `server/wavValidation.ts` — bounded RIFF/WAVE PCM16 validation and metadata extraction.
-- `tests/` — hardware-independent logic, repository, transcript authority, and provider tests.
+- `tests/` — hardware-independent logic, repository, transcript preference, and provider tests.
 
 ## Checks
 
@@ -286,7 +286,7 @@ The first physical-device verification should use the connected Android developm
 3. Record 10–15 seconds, place a bookmark, and stop. The WAV is finalized and copied before the session is inserted into SQLite.
 4. Confirm the session appears on the home history. Processing may still be shown as pending while A → D2 runs.
 5. Close and reopen the app. The session should remain visible without the server.
-6. Open it, play/pause, tap the timeline to seek, tap a bookmark, and read the saved authoritative transcript.
+6. Open it, play/pause, tap the timeline to seek, tap a bookmark, and read the saved preferred transcript.
 7. Rename the session, close/reopen, then delete it and close/reopen again to confirm deletion persists.
 
 The local `expo-sqlite`, `expo-file-system`, `expo-audio`, and `expo-asset` modules are native dependencies. Changes to their installation or app configuration require `npx expo prebuild` followed by a new development-client build; JavaScript-only changes can use Metro reload after the client is installed.

@@ -63,13 +63,13 @@ const DEFINITIONS: Record<BenchmarkBackendId, BenchmarkDefinition> = {
     id: 'transcript-repair',
     label: 'AUDIO-GROUNDED REPAIR · D2',
     model: GEMINI_FLASH_LITE_MODEL,
-    languageConfiguration: 'advisory language context · audio authoritative',
+    languageConfiguration: 'advisory language context · audio grounded',
   },
   reconciled: {
     id: 'reconciled',
     label: 'RECONCILED · D',
     model: GEMINI_AUDIO_UNDERSTANDING_MODEL,
-    languageConfiguration: 'audio-authoritative candidate comparison',
+    languageConfiguration: 'audio-grounded candidate comparison',
   },
 };
 

@@ -71,12 +71,12 @@ export const BENCHMARK_BACKEND_DEFINITIONS: readonly (
     id: 'transcript-repair',
     label: 'AUDIO-GROUNDED REPAIR · D2',
     model: 'gemini-3.5-flash-lite',
-    languageConfiguration: 'advisory language context · audio authoritative',
+    languageConfiguration: 'advisory language context · audio grounded',
   },
   {
     id: 'reconciled',
     label: 'RECONCILED · D',
     model: 'gemini-3.7-flash',
-    languageConfiguration: 'audio-authoritative candidate comparison',
+    languageConfiguration: 'audio-grounded candidate comparison',
   },
 ];

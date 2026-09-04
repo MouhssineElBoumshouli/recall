@@ -22,8 +22,9 @@ interface StoredSessionRow {
   live_transcript: string;
   raw_final_transcript: string | null;
   repaired_transcript: string | null;
-  authoritative_transcript: string;
-  authoritative_source: RecallSession['authoritativeTranscriptSource'];
+  preferred_transcript: string;
+  preferred_source: RecallSession['preferredTranscriptSource'];
+  preferred_source_override: RecallSession['preferredTranscriptSourceOverride'];
   language_context: string | null;
   processing_error: string | null;
 }
@@ -36,29 +37,37 @@ interface StoredBookmarkRow {
 }
 
 class FakeDatabase implements SessionDatabase {
-  version = 0;
+  version: number;
   schemaExecutions = 0;
+  migrationSql = '';
   sessions = new Map<string, StoredSessionRow>();
   bookmarks: StoredBookmarkRow[] = [];
+
+  constructor(version = 0) {
+    this.version = version;
+  }
 
   async execAsync(source: string): Promise<void> {
     if (source.includes('CREATE TABLE IF NOT EXISTS sessions')) {
       this.schemaExecutions += 1;
     }
-    if (source.includes('PRAGMA user_version = 1')) {
-      this.version = 1;
+    if (source.includes('PRAGMA user_version = 2')) {
+      this.version = 2;
+    }
+    if (source.includes('ALTER TABLE sessions RENAME COLUMN')) {
+      this.migrationSql = source;
     }
   }
 
   async runAsync(source: string, params: SqliteValue[] = []): Promise<unknown> {
     if (source.includes('INSERT INTO sessions')) {
-      const [id, title, createdAt, recordedAt, updatedAt, durationMs, audioUri, recordingStatus, transcriptStatus, liveTranscript, rawFinal, repaired, authoritative, authoritativeSource, languageContext, processingError] = params;
+      const [id, title, createdAt, recordedAt, updatedAt, durationMs, audioUri, recordingStatus, transcriptStatus, liveTranscript, rawFinal, repaired, preferred, preferredSource, preferredSourceOverride, languageContext, processingError] = params;
       this.sessions.set(String(id), {
         id: String(id), title: String(title), created_at: String(createdAt), recorded_at: String(recordedAt), updated_at: String(updatedAt),
         duration_ms: Number(durationMs), audio_uri: String(audioUri), recording_status: recordingStatus as RecallSession['recordingStatus'],
         transcript_status: transcriptStatus as RecallSession['transcriptStatus'], live_transcript: String(liveTranscript),
         raw_final_transcript: rawFinal as string | null, repaired_transcript: repaired as string | null,
-        authoritative_transcript: String(authoritative), authoritative_source: authoritativeSource as RecallSession['authoritativeTranscriptSource'],
+        preferred_transcript: String(preferred), preferred_source: preferredSource as RecallSession['preferredTranscriptSource'], preferred_source_override: preferredSourceOverride as RecallSession['preferredTranscriptSourceOverride'],
         language_context: languageContext as string | null, processing_error: processingError as string | null,
       });
     } else if (source.includes('INSERT INTO bookmarks')) {
@@ -71,7 +80,7 @@ class FakeDatabase implements SessionDatabase {
         this.sessions.set(String(id), { ...current, title: String(title), updated_at: String(updatedAt) });
       }
     } else if (source.startsWith('UPDATE sessions SET')) {
-      const [updatedAt, live, rawFinal, repaired, authoritative, authoritativeSource, transcriptStatus, processingError, id] = params;
+      const [updatedAt, live, rawFinal, repaired, preferred, preferredSource, preferredSourceOverride, transcriptStatus, processingError, id] = params;
       const current = this.sessions.get(String(id));
       if (current) {
         this.sessions.set(String(id), {
@@ -80,8 +89,9 @@ class FakeDatabase implements SessionDatabase {
           live_transcript: String(live),
           raw_final_transcript: rawFinal as string | null,
           repaired_transcript: repaired as string | null,
-          authoritative_transcript: String(authoritative),
-          authoritative_source: authoritativeSource as RecallSession['authoritativeTranscriptSource'],
+          preferred_transcript: String(preferred),
+          preferred_source: preferredSource as RecallSession['preferredTranscriptSource'],
+          preferred_source_override: preferredSourceOverride as RecallSession['preferredTranscriptSourceOverride'],
           transcript_status: (transcriptStatus === null ? current.transcript_status : transcriptStatus) as RecallSession['transcriptStatus'],
           processing_error: processingError as string | null,
         });
@@ -128,6 +138,28 @@ function session(id: string, recordedAt: string) {
   });
 }
 
+function storedRow(value: RecallSession): StoredSessionRow {
+  return {
+    id: value.id,
+    title: value.title,
+    created_at: value.createdAt,
+    recorded_at: value.recordedAt,
+    updated_at: value.updatedAt,
+    duration_ms: value.durationMs,
+    audio_uri: value.audioUri,
+    recording_status: value.recordingStatus,
+    transcript_status: value.transcriptStatus,
+    live_transcript: value.liveTranscript,
+    raw_final_transcript: value.rawFinalTranscript,
+    repaired_transcript: value.repairedTranscript,
+    preferred_transcript: value.preferredTranscript,
+    preferred_source: value.preferredTranscriptSource,
+    preferred_source_override: value.preferredTranscriptSourceOverride,
+    language_context: value.languageContext ? JSON.stringify(value.languageContext) : null,
+    processing_error: value.processingError,
+  };
+}
+
 describe('persistent session repository', () => {
   it('initializes schema once, persists sessions/bookmarks, sorts newest first, and reloads', async () => {
     const database = new FakeDatabase();
@@ -148,6 +180,31 @@ describe('persistent session repository', () => {
     expect((await restartedRepository.listSessions()).map((item) => item.id)).toEqual(['newer', 'older']);
   });
 
+  it('migrates the v1 transcript projection names without changing saved semantics', async () => {
+    const database = new FakeDatabase(1);
+    const legacy = session('legacy', '2026-09-04T09:00:00.000Z');
+    legacy.session.rawFinalTranscript = 'Raw final';
+    legacy.session.repairedTranscript = 'Repaired';
+    legacy.session.preferredTranscript = 'Repaired';
+    legacy.session.preferredTranscriptSource = 'repaired';
+    database.sessions.set(legacy.session.id, storedRow(legacy.session));
+
+    const repository = createSessionRepository(database);
+    await repository.initialize();
+
+    expect(database.version).toBe(2);
+    expect(database.migrationSql).toContain('authoritative_transcript TO preferred_transcript');
+    expect(database.migrationSql).toContain('authoritative_source TO preferred_source');
+    expect((await repository.getSession('legacy'))?.session).toMatchObject({
+      id: 'legacy',
+      rawFinalTranscript: 'Raw final',
+      repairedTranscript: 'Repaired',
+      preferredTranscript: 'Repaired',
+      preferredTranscriptSource: 'repaired',
+      preferredTranscriptSourceOverride: null,
+    });
+  });
+
   it('renames, updates transcript layers, and deletes only the requested session with bookmarks', async () => {
     const database = new FakeDatabase();
     const repository = createSessionRepository(database);
@@ -157,12 +214,26 @@ describe('persistent session repository', () => {
     await repository.createSession(second.session, second.bookmarks);
 
     await repository.renameSession('first', 'Renamed session');
-    await repository.updateSession('first', { rawFinalTranscript: 'A transcript', transcriptStatus: 'succeeded' });
+    await repository.updateSession('first', {
+      rawFinalTranscript: 'A transcript',
+      repairedTranscript: 'D2 transcript',
+      preferredTranscriptSourceOverride: 'raw-final',
+      transcriptStatus: 'succeeded',
+    });
     expect((await repository.getSession('first'))?.session).toMatchObject({
       title: 'Renamed session',
       rawFinalTranscript: 'A transcript',
-      authoritativeTranscript: 'A transcript',
-      authoritativeTranscriptSource: 'raw-final',
+      repairedTranscript: 'D2 transcript',
+      preferredTranscript: 'A transcript',
+      preferredTranscriptSource: 'raw-final',
+      preferredTranscriptSourceOverride: 'raw-final',
+    });
+
+    const restartedRepository = createSessionRepository(database);
+    expect((await restartedRepository.getSession('first'))?.session).toMatchObject({
+      preferredTranscript: 'A transcript',
+      preferredTranscriptSource: 'raw-final',
+      preferredTranscriptSourceOverride: 'raw-final',
     });
 
     await repository.deleteSession('first');

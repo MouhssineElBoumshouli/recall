@@ -5,6 +5,7 @@ import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-au
 
 import { colors, displayFont, layout, radii, spacing, typography } from '@/design/tokens';
 import { isAudioFileAvailable } from '@/services/sessionAudioStorage';
+import { getPreferredTranscript } from '@/services/transcriptPreference';
 import { useSessions } from '@/providers/SessionProvider';
 import type { RecallSessionWithBookmarks } from '@/types/session';
 import { formatElapsedMs } from '@/utils/time';
@@ -159,7 +160,7 @@ export default function SessionDetailScreen() {
   }
 
   const { session, bookmarks } = detail;
-  const transcript = session.authoritativeTranscript || session.liveTranscript;
+  const transcript = getPreferredTranscript(session).text;
 
   return (
     <ScrollView contentContainerStyle={styles.screenContent}>
@@ -232,7 +233,6 @@ export default function SessionDetailScreen() {
 
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionLabel}>TRANSCRIPT</Text>
-        <Text style={styles.sourceLabel}>{session.authoritativeTranscriptSource.replace('-', ' ')}</Text>
       </View>
       <View style={styles.transcriptBlock}>
         {transcript ? <Text style={styles.transcriptText}>{transcript}</Text> : session.transcriptStatus === 'processing' ? (

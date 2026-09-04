@@ -6,7 +6,7 @@ import type {
   SessionBookmark,
   SessionTranscriptUpdate,
 } from '@/types/session';
-import { buildTranscriptUpdate } from '@/services/transcriptAuthority';
+import { buildTranscriptUpdate } from '@/services/transcriptPreference';
 
 export type SqliteValue = SQLiteBindValue;
 
@@ -18,7 +18,7 @@ export interface SessionDatabase {
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
-export const SESSION_DATABASE_VERSION = 1;
+export const SESSION_DATABASE_VERSION = 2;
 
 export const SESSION_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -34,8 +34,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   live_transcript TEXT NOT NULL DEFAULT '',
   raw_final_transcript TEXT,
   repaired_transcript TEXT,
-  authoritative_transcript TEXT NOT NULL DEFAULT '',
-  authoritative_source TEXT NOT NULL DEFAULT 'none',
+  preferred_transcript TEXT NOT NULL DEFAULT '',
+  preferred_source TEXT NOT NULL DEFAULT 'none',
+  preferred_source_override TEXT,
   language_context TEXT,
   processing_error TEXT
 );
@@ -48,6 +49,13 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_session_id ON bookmarks(session_id);
+`;
+
+export const SESSION_SCHEMA_V1_TO_V2_SQL = `
+ALTER TABLE sessions RENAME COLUMN authoritative_transcript TO preferred_transcript;
+ALTER TABLE sessions RENAME COLUMN authoritative_source TO preferred_source;
+ALTER TABLE sessions ADD COLUMN preferred_source_override TEXT;
+PRAGMA user_version = 2;
 `;
 
 interface SessionRow {
@@ -63,8 +71,9 @@ interface SessionRow {
   live_transcript: string;
   raw_final_transcript: string | null;
   repaired_transcript: string | null;
-  authoritative_transcript: string;
-  authoritative_source: RecallSession['authoritativeTranscriptSource'];
+  preferred_transcript: string;
+  preferred_source: RecallSession['preferredTranscriptSource'];
+  preferred_source_override: RecallSession['preferredTranscriptSourceOverride'];
   language_context: string | null;
   processing_error: string | null;
 }
@@ -103,8 +112,9 @@ function mapSession(row: SessionRow): RecallSession {
     liveTranscript: row.live_transcript,
     rawFinalTranscript: row.raw_final_transcript,
     repairedTranscript: row.repaired_transcript,
-    authoritativeTranscript: row.authoritative_transcript,
-    authoritativeTranscriptSource: row.authoritative_source,
+    preferredTranscript: row.preferred_transcript,
+    preferredTranscriptSource: row.preferred_source,
+    preferredTranscriptSourceOverride: row.preferred_source_override,
     languageContext: parseLanguageContext(row.language_context),
     processingError: row.processing_error,
   };
@@ -130,7 +140,12 @@ export async function initializeSessionSchema(database: SessionDatabase): Promis
 
   if (version < 1) {
     await database.execAsync(SESSION_SCHEMA_SQL);
-    await database.execAsync('PRAGMA user_version = 1;');
+    await database.execAsync(`PRAGMA user_version = ${SESSION_DATABASE_VERSION};`);
+    return;
+  }
+
+  if (version < 2) {
+    await database.execAsync(SESSION_SCHEMA_V1_TO_V2_SQL);
   }
 }
 
@@ -189,9 +204,9 @@ export function createSessionRepository(database: SessionDatabase): SessionRepos
           `INSERT INTO sessions (
             id, title, created_at, recorded_at, updated_at, duration_ms, audio_uri,
             recording_status, transcript_status, live_transcript, raw_final_transcript,
-            repaired_transcript, authoritative_transcript, authoritative_source,
+            repaired_transcript, preferred_transcript, preferred_source, preferred_source_override,
             language_context, processing_error
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             session.id,
             session.title,
@@ -205,8 +220,9 @@ export function createSessionRepository(database: SessionDatabase): SessionRepos
             session.liveTranscript,
             session.rawFinalTranscript,
             session.repairedTranscript,
-            session.authoritativeTranscript,
-            session.authoritativeTranscriptSource,
+            session.preferredTranscript,
+            session.preferredTranscriptSource,
+            session.preferredTranscriptSourceOverride,
             session.languageContext ? JSON.stringify(session.languageContext) : null,
             session.processingError,
           ],
@@ -236,7 +252,7 @@ export function createSessionRepository(database: SessionDatabase): SessionRepos
       await database.runAsync(
         `UPDATE sessions SET
           updated_at = ?, live_transcript = ?, raw_final_transcript = ?,
-          repaired_transcript = ?, authoritative_transcript = ?, authoritative_source = ?,
+          repaired_transcript = ?, preferred_transcript = ?, preferred_source = ?, preferred_source_override = ?,
           transcript_status = COALESCE(?, transcript_status), processing_error = ?
          WHERE id = ?`,
         [
@@ -244,8 +260,9 @@ export function createSessionRepository(database: SessionDatabase): SessionRepos
           next.liveTranscript ?? current.live_transcript,
           next.rawFinalTranscript === undefined ? current.raw_final_transcript : next.rawFinalTranscript,
           next.repairedTranscript === undefined ? current.repaired_transcript : next.repairedTranscript,
-          next.text,
-          next.source,
+          next.preferredTranscript,
+          next.preferredTranscriptSource,
+          next.preferredTranscriptSourceOverride,
           update.transcriptStatus ?? null,
           update.processingError === undefined ? current.processing_error : update.processingError,
           id,
@@ -271,4 +288,3 @@ export function createSessionRepository(database: SessionDatabase): SessionRepos
     },
   };
 }
-

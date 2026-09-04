@@ -45,7 +45,7 @@ export async function persistRecordingAudio(sourceUri: string | null, sessionId:
       try {
         source.delete();
       } catch {
-        // The durable copy is authoritative; an undeleted source is harmless.
+        // The durable copy is the retained session source; an undeleted source is harmless.
       }
     }
     return { uri: destination.uri, size: destination.size };
