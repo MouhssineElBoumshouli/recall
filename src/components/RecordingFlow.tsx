@@ -6,6 +6,7 @@ import { colors, displayFont, layout, radii, spacing, typography } from '@/desig
 import { useRecordingSession } from '@/hooks/useRecordingSession';
 import type { Bookmark } from '@/types/bookmark';
 import type { TranscriptSegment } from '@/types/transcript';
+import type { RecordingDebugInfo } from '@/types/recording';
 import { formatElapsedMs, formatTimestampMs } from '@/utils/time';
 
 function PressableButton({
@@ -90,6 +91,29 @@ function TranscriptLines({ segments }: { segments: TranscriptSegment[] }) {
   );
 }
 
+function DevLiveDiagnostics({ debug }: { debug: RecordingDebugInfo }) {
+  if (!__DEV__) {
+    return null;
+  }
+
+  return (
+    <View style={styles.devDiagnostics}>
+      <Text style={styles.devDiagnosticsTitle}>DEV LIVE DIAGNOSTICS</Text>
+      <Text style={styles.devDiagnosticsText}>
+        {debug.connectionState} · token {debug.tokenFetched ? 'yes' : 'no'} · socket {debug.socketOpened ? 'open' : 'closed'} · setup {debug.setupComplete ? 'ready' : 'pending'}
+      </Text>
+      <Text style={styles.devDiagnosticsText}>
+        sent {debug.audioChunksSent} · dropped {debug.droppedAudioChunks} · messages {debug.serverMessagesReceived} · interim {debug.interimTranscriptEvents} · final {debug.finalTranscriptEvents}
+      </Text>
+      {(debug.lastError || debug.lastCloseCode !== null || debug.setupTimedOut) && (
+        <Text style={styles.devDiagnosticsError}>
+          {debug.setupTimedOut ? 'setup timeout' : debug.lastError || `closed ${debug.lastCloseCode}`}
+        </Text>
+      )}
+    </View>
+  );
+}
+
 function IdleScreen({ phase, error, onStart }: { phase: string; error: string | null; onStart: () => void }) {
   return (
     <ScrollView contentContainerStyle={styles.screenContent}>
@@ -126,6 +150,7 @@ function RecordingScreen({
   interimText,
   bookmarks,
   amplitude,
+  debug,
   error,
   onBookmark,
   onStop,
@@ -136,6 +161,7 @@ function RecordingScreen({
   interimText: string | null;
   bookmarks: Bookmark[];
   amplitude: number;
+  debug: RecordingDebugInfo;
   error: string | null;
   onBookmark: () => void;
   onStop: () => void;
@@ -162,6 +188,7 @@ function RecordingScreen({
           <Text style={styles.connectionHint}>The local recording is the source of truth.</Text>
         </View>
       </View>
+      <DevLiveDiagnostics debug={debug} />
       <View style={styles.transcriptHeader}>
         <SectionLabel>LIVE TRANSCRIPT</SectionLabel>
         <Text style={styles.segmentCount}>{finalizedSegments.length} finalized</Text>
@@ -232,6 +259,7 @@ export function RecordingFlow() {
           interimText={session.interimText}
           bookmarks={session.bookmarks}
           amplitude={session.amplitude}
+          debug={session.debug}
           error={session.error}
           onBookmark={session.addBookmark}
           onStop={session.stop}
@@ -311,4 +339,8 @@ const styles = StyleSheet.create({
   bookmarkCount: { color: colors.accent, fontFamily: displayFont, fontSize: typography.title, fontWeight: '700' },
   actionRow: { flexDirection: 'row', gap: spacing.sm },
   metaValuePath: { color: colors.mutedInk, fontSize: typography.caption, lineHeight: 20, marginVertical: spacing.lg },
+  devDiagnostics: { gap: spacing.xs, marginTop: spacing.md, padding: spacing.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  devDiagnosticsTitle: { color: colors.faintInk, fontSize: 10, fontWeight: '800', letterSpacing: 1.1 },
+  devDiagnosticsText: { color: colors.mutedInk, fontSize: 11, lineHeight: 17 },
+  devDiagnosticsError: { color: colors.danger, fontSize: 11, lineHeight: 17 },
 });

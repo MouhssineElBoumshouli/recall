@@ -132,6 +132,7 @@ export function useRecordingSession({ onSessionCreated }: UseRecordingSessionOpt
   const sessionPersistedRef = useRef(false);
   const bookmarksRef = useRef<Bookmark[]>([]);
   const processingAttemptRef = useRef(0);
+  const lastDiagnosticLogRef = useRef('');
   const [transcriptAccumulator] = useState(() => new TranscriptAccumulator());
   const [processingClient] = useState(() => new SessionProcessingClient(tokenServerUrl));
   const [manager] = useState(
@@ -170,6 +171,41 @@ export function useRecordingSession({ onSessionCreated }: UseRecordingSessionOpt
         },
       }),
   );
+
+  useEffect(() => {
+    if (!__DEV__) {
+      return;
+    }
+
+    const signature = [
+      debug.connectionState,
+      debug.tokenFetched,
+      debug.socketOpened,
+      debug.setupComplete,
+      debug.setupTimedOut,
+      debug.serverMessagesReceived,
+      debug.interimTranscriptEvents,
+      debug.finalTranscriptEvents,
+      debug.lastCloseCode,
+      debug.lastError,
+    ].join('|');
+    if (signature === lastDiagnosticLogRef.current) {
+      return;
+    }
+
+    lastDiagnosticLogRef.current = signature;
+    console.debug('[Recall] live diagnostic', {
+      state: debug.connectionState,
+      tokenFetched: debug.tokenFetched,
+      socketOpened: debug.socketOpened,
+      setupComplete: debug.setupComplete,
+      serverMessagesReceived: debug.serverMessagesReceived,
+      interimTranscriptEvents: debug.interimTranscriptEvents,
+      finalTranscriptEvents: debug.finalTranscriptEvents,
+      lastCloseCode: debug.lastCloseCode,
+      lastError: debug.lastError,
+    });
+  }, [debug]);
 
   useEffect(() => {
     if (phase !== 'recording') {
@@ -262,6 +298,7 @@ export function useRecordingSession({ onSessionCreated }: UseRecordingSessionOpt
     setElapsedMs(0);
     setConnectionState('idle');
     setDebug({ ...initialDebug });
+    lastDiagnosticLogRef.current = '';
 
     try {
       const permissionModule = AudioStudioModule as AudioStudioPermissionModule;

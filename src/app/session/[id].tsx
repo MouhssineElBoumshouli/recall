@@ -25,7 +25,7 @@ function ActionButton({ label, onPress, danger = false }: { label: string; onPre
 function StatusText({ session }: { session: RecallSessionWithBookmarks }) {
   const { transcriptStatus, processingError } = session.session;
   if (transcriptStatus === 'processing') {
-    return <Text style={styles.statusText}>Processing transcript…</Text>;
+    return <Text style={styles.statusText}>{session.session.liveTranscript ? 'Improving transcript…' : 'Preparing transcript…'}</Text>;
   }
   if (transcriptStatus === 'failed') {
     return <Text style={styles.errorText}>{processingError || 'Transcript processing needs attention.'}</Text>;
@@ -46,7 +46,9 @@ export default function SessionDetailScreen() {
   const [savingTitle, setSavingTitle] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [timelineWidth, setTimelineWidth] = useState(0);
-  const player = useAudioPlayer(detail?.session.audioUri);
+  // Expo Audio's SDK 57 API accepts null as an empty source. Keep the player
+  // explicitly unloaded until the repository has returned a valid session.
+  const player = useAudioPlayer(detail?.session.audioUri ?? null);
   const playerStatus = useAudioPlayerStatus(player);
 
   useEffect(() => {
@@ -236,7 +238,11 @@ export default function SessionDetailScreen() {
         <Text style={styles.sourceLabel}>{session.authoritativeTranscriptSource.replace('-', ' ')}</Text>
       </View>
       <View style={styles.transcriptBlock}>
-        {transcript ? <Text style={styles.transcriptText}>{transcript}</Text> : <Text style={styles.helperText}>No transcript was captured.</Text>}
+        {transcript ? <Text style={styles.transcriptText}>{transcript}</Text> : session.transcriptStatus === 'processing' ? (
+          <Text style={styles.helperText}>
+            Audio saved. Preparing transcript…
+          </Text>
+        ) : <Text style={styles.helperText}>No transcript was captured.</Text>}
       </View>
 
       <View style={styles.sectionHeader}>

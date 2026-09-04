@@ -1,7 +1,10 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { colors, displayFont, layout, radii, spacing, typography } from '@/design/tokens';
 import { deleteSessionAudio } from '@/services/sessionAudioStorage';
 import { getSessionRepository } from '@/services/sqliteSessionRepository';
+import { loadSessionSnapshot } from '@/services/sessionSnapshot';
 import type { SessionRepository } from '@/services/sessionRepository';
 import type {
   RecallSession,
@@ -28,40 +31,100 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback;
 }
 
+function StartupScreen({
+  error,
+  onRetry,
+}: {
+  error: string | null;
+  onRetry: () => void;
+}) {
+  const failed = Boolean(error);
+  return (
+    <View style={styles.startupScreen}>
+      <View style={styles.wordmarkRow}>
+        <View style={styles.wordmarkMark} />
+        <Text style={styles.wordmark}>RECALL</Text>
+      </View>
+      <Text style={styles.startupTitle}>{failed ? 'Your sessions are still here.' : 'Opening your sessions…'}</Text>
+      <Text style={styles.startupMessage}>
+        {failed ? 'Recall could not open local session storage.' : 'Loading local memory from this device.'}
+      </Text>
+      {failed && (
+        <>
+          {__DEV__ && error && <Text style={styles.startupDetail}>{error}</Text>}
+          <Pressable accessibilityRole="button" accessibilityLabel="Retry opening sessions" onPress={onRetry} style={styles.retryButton}>
+            <Text style={styles.retryLabel}>Try again</Text>
+          </Pressable>
+        </>
+      )}
+    </View>
+  );
+}
+
 export function SessionProvider({ children }: { children: React.ReactNode }) {
-  const [repository, setRepository] = useState<SessionRepository | null>(null);
   const [sessions, setSessions] = useState<RecallSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const repositoryRef = useRef<SessionRepository | null>(null);
+  const initializationRef = useRef<Promise<SessionRepository> | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const getReadyRepository = useCallback(async () => {
+    if (repositoryRef.current) {
+      return repositoryRef.current;
+    }
+
+    if (!initializationRef.current) {
+      initializationRef.current = getSessionRepository().then(async (nextRepository) => {
+        await nextRepository.initialize();
+        return nextRepository;
+      }).catch((initializationError) => {
+        initializationRef.current = null;
+        throw initializationError;
+      });
+    }
+
+    const nextRepository = await initializationRef.current;
+    repositoryRef.current = nextRepository;
+    return nextRepository;
+  }, []);
 
   const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const nextRepository = repository || await getSessionRepository();
-      await nextRepository.initialize();
-      const nextSessions = await nextRepository.listSessions();
-      setRepository(nextRepository);
-      setSessions(nextSessions);
+    if (mountedRef.current) {
+      setLoading(true);
       setError(null);
-    } catch (refreshError) {
-      setError(errorMessage(refreshError, 'Unable to load saved sessions.'));
-    } finally {
-      setLoading(false);
     }
-  }, [repository]);
+    try {
+      const nextRepository = await getReadyRepository();
+      const nextSessions = await loadSessionSnapshot(nextRepository);
+      if (mountedRef.current) {
+        setSessions(nextSessions);
+      }
+    } catch (refreshError) {
+      if (mountedRef.current) {
+        const message = errorMessage(refreshError, 'Unable to load saved sessions.');
+        setError(message);
+        if (__DEV__) {
+          console.error('[Recall] local session initialization failed:', message);
+        }
+      }
+    } finally {
+      if (mountedRef.current) {
+        setLoading(false);
+      }
+    }
+  }, [getReadyRepository]);
 
   useEffect(() => {
     void Promise.resolve().then(() => refresh());
   }, [refresh]);
-
-  const getReadyRepository = useCallback(async () => {
-    const nextRepository = repository || await getSessionRepository();
-    await nextRepository.initialize();
-    if (!repository) {
-      setRepository(nextRepository);
-    }
-    return nextRepository;
-  }, [repository]);
 
   const getSession = useCallback(async (id: string) => {
     const nextRepository = await getReadyRepository();
@@ -71,20 +134,26 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const createSession = useCallback(async (session: RecallSession, bookmarks: SessionBookmark[]) => {
     const nextRepository = await getReadyRepository();
     await nextRepository.createSession(session, bookmarks);
-    setSessions(await nextRepository.listSessions());
-    setError(null);
+    if (mountedRef.current) {
+      setSessions(await nextRepository.listSessions());
+      setError(null);
+    }
   }, [getReadyRepository]);
 
   const updateSession = useCallback(async (id: string, update: SessionTranscriptUpdate) => {
     const nextRepository = await getReadyRepository();
     await nextRepository.updateSession(id, update);
-    setSessions(await nextRepository.listSessions());
+    if (mountedRef.current) {
+      setSessions(await nextRepository.listSessions());
+    }
   }, [getReadyRepository]);
 
   const renameSession = useCallback(async (id: string, title: string) => {
     const nextRepository = await getReadyRepository();
     await nextRepository.renameSession(id, title);
-    setSessions(await nextRepository.listSessions());
+    if (mountedRef.current) {
+      setSessions(await nextRepository.listSessions());
+    }
   }, [getReadyRepository]);
 
   const deleteSession = useCallback(async (id: string) => {
@@ -96,7 +165,9 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       await refresh();
       throw new Error(`Session metadata was deleted, but its audio could not be cleaned up: ${errorMessage(audioError, 'unknown local file error')}`);
     }
-    setSessions(await nextRepository.listSessions());
+    if (mountedRef.current) {
+      setSessions(await nextRepository.listSessions());
+    }
   }, [getReadyRepository, refresh]);
 
   const value = useMemo<SessionContextValue>(() => ({
@@ -121,7 +192,11 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     deleteSession,
   ]);
 
-  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+  return (
+    <SessionContext.Provider value={value}>
+      {loading || error ? <StartupScreen error={error} onRetry={() => void refresh()} /> : children}
+    </SessionContext.Provider>
+  );
 }
 
 export function useSessions(): SessionContextValue {
@@ -131,3 +206,23 @@ export function useSessions(): SessionContextValue {
   }
   return context;
 }
+
+const styles = StyleSheet.create({
+  startupScreen: {
+    flex: 1,
+    backgroundColor: colors.background,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.xxl,
+    alignItems: 'flex-start',
+    justifyContent: 'center',
+    gap: spacing.lg,
+  },
+  wordmarkRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  wordmarkMark: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.accent },
+  wordmark: { color: colors.ink, fontSize: typography.eyebrow, fontWeight: '800', letterSpacing: 2 },
+  startupTitle: { color: colors.ink, fontFamily: displayFont, fontSize: typography.title, fontWeight: '700', maxWidth: layout.maxContentWidth },
+  startupMessage: { color: colors.mutedInk, fontSize: typography.body, lineHeight: 24, maxWidth: layout.maxContentWidth },
+  startupDetail: { color: colors.danger, fontSize: typography.caption, lineHeight: 20, maxWidth: layout.maxContentWidth },
+  retryButton: { minHeight: layout.touchTarget, borderRadius: radii.md, backgroundColor: colors.ink, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.lg },
+  retryLabel: { color: colors.white, fontSize: typography.body, fontWeight: '700' },
+});

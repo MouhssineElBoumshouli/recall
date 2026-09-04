@@ -185,6 +185,7 @@ The Phase 0.6/0.7 benchmark remains available through `POST /benchmark` and its 
 - `src/services/sessionAudioStorage.ts` — durable app-owned WAV copy and target-directory cleanup.
 - `src/services/sessionFactory.ts` — session/title/bookmark creation from a completed recording.
 - `src/services/sessionProcessingClient.ts` — client for the narrow A → D2 `/process` endpoint.
+- `src/services/sessionSnapshot.ts` — ordered local-repository initialization and history snapshot loading.
 - `src/services/transcriptAuthority.ts` — explicit D2 > A > live transcript fallback logic.
 - `src/types/session.ts` — persistent session, bookmark, status, and transcript-layer types.
 - `src/services/liveTranscriptionSessionManager.ts` — reconnect/rotation/session lifecycle.
@@ -249,6 +250,8 @@ The first physical-device verification should use the connected Android developm
 7. Rename the session, close/reopen, then delete it and close/reopen again to confirm deletion persists.
 
 The local `expo-sqlite`, `expo-file-system`, `expo-audio`, and `expo-asset` modules are native dependencies. Changes to their installation or app configuration require `npx expo prebuild` followed by a new development-client build; JavaScript-only changes can use Metro reload after the client is installed.
+
+During development, the recording route includes a compact DEV-only live diagnostic panel showing token/socket/setup milestones and safe audio/transcript event counts. It is not rendered in production builds. If a development client opens to a blank native surface, verify that Metro is running with a device-reachable host and that adb reverse still maps port 8081; the local session database itself does not require Metro or the token server once JavaScript has loaded.
 
 ## Phase 0.7 benchmark
 

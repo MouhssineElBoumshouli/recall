@@ -128,6 +128,9 @@ Recall's intended product direction is worldwide multilingual capture and memory
 20. The normal post-recording path uses `/process` for A followed by D2. The experimental benchmark matrix remains available but is not part of normal session history or presentation.
 21. The authoritative transcript is selected explicitly as repaired D2 > raw A > live finalized capture. Lower-level transcript layers remain persisted for comparison.
 22. Session deletion removes database metadata first, then only the target session audio directory. If filesystem cleanup fails, the app reports the recoverable cleanup issue instead of deleting unrelated files.
+23. SessionProvider now uses one stable repository initialization promise and exposes an explicit warm-up/error boundary. Loading and SQLite initialization failures render a Recall-styled recovery screen with retry; the app does not leave a featureless screen after JavaScript has loaded.
+24. Session detail passes `null` to the SDK 57 audio player until a saved URI is available. Missing audio is handled as a recoverable playback/seek error instead of being allowed to initialize an invalid source.
+25. Live capture diagnostics are DEV-only. They report token/socket/setup milestones, sent/dropped chunks, server/interim/final counts, close code, and safe errors; they never include credentials, audio, or transcript contents.
 
 ## Validation status
 
@@ -135,7 +138,7 @@ Passed in the current workspace:
 
 - `npm run typecheck`
 - `npm run server:check`
-- `npm test` — 16 files, 88 tests
+- `npm test` — 17 files, 90 tests
 - `npm run lint`
 - `npx expo-doctor` — 16/18 checks; the remaining warnings are the intentionally committed native project containing app.json Prebuild-managed fields and existing patch-version mismatches in the Expo SDK 57 dependency set.
 - `npx expo prebuild --no-install` — Android native project generated
@@ -149,7 +152,12 @@ Passed in the current workspace:
 - Phase 0.7 physical status — no new physical recording has been performed. The stopped-screen benchmark is ready to compare LIVE, A, C, C2, and D2; B remains intentionally unavailable and D remains disabled.
 - Phase 1 static result — `npm run typecheck`, `npm run server:check`, `npm run lint`, and `npm test` passed with 16 test files and 88 tests. Repository tests cover schema initialization/versioning, create/list/reload, rename/delete/bookmark persistence, processing failure preservation, and D2 > A > live authority selection.
 - Phase 1 native result — `npx expo prebuild --no-install` regenerated the Android project for `expo-sqlite`, `expo-file-system`, `expo-audio`, and `expo-asset`. `npx expo run:android --device` completed successfully after using Java 17 and `C:\tmp` for the known Windows Gradle loopback workaround; the debug APK installed and Metro bundled the new routes on `SM_X516B`.
-- Phase 1 physical status — no new recording was performed by this coding session. The tablet is ready for the manual local-session persistence sequence; playback, SQLite restart persistence, rename, and delete remain device verification tasks.
+- Phase 1 physical result — the existing saved session survived force-stop/reopen without app-data changes. After Metro was serving correctly, Home listed the session and detail loaded its saved repaired transcript, one bookmark, duration, and local playback controls.
+- Phase 1 white-screen diagnosis — after force-stop with a stale/unresponsive Metro listener on port 8081, the native activity opened but the UI hierarchy contained no React text. The first relevant log was `unknown:ReactNative: Unable to display loading message ... Loading from 192.168.100.10:8081…`, alongside `ReconnectingWebSocket: Couldn't connect to ws://localhost:8081/message`; there was no FATAL, React exception, SQLite exception, or audio initialization exception. The white screen was the development client waiting for an unavailable JS bundle, not lost SQLite data. Metro was restarted with a LAN binding compatible with adb reverse, after which the saved session rendered.
+- Phase 1 startup hardening — SessionProvider initialization is now stable and guarded by branded loading/error/retry UI. Session detail uses an explicit null audio source before repository data exists and reports missing-file playback/seek errors safely.
+- Phase 1 live regression — the physical report observed no live words, but the failing recording did not preserve the new connection milestones, so a provider/audio/UI root cause cannot yet be proven from that run. The hook still uses the validated single recorder → PCM callback → manager path; a DEV-only diagnostic panel and safe Metro diagnostics are now available for the next short voice recording.
+- Phase 1 processing UX — detail now distinguishes `Improving transcript…` when live text exists from `Preparing transcript…` when only the saved audio is available. Persisted session updates refresh the open detail route automatically.
+- Phase 1 static result after stabilization — `npm run typecheck`, `npm run server:check`, `npm run lint`, and `npm test` passed with 17 test files and 90 tests. New tests cover repository startup snapshot success/failure; existing tests cover schema versioning, saved-session reload, processing-failure preservation, and transcript fallback.
 
 Runtime verification attempted on Windows:
 
@@ -200,9 +208,9 @@ Version control:
 
 Remaining physical validation:
 
-- Phase 1 session persistence after a real Android stop/restart cycle.
 - Offline playback, pause, timeline seeking, and bookmark seeking from a persisted WAV.
 - Rename and delete persistence after app restart.
+- One short new recording with the DEV live diagnostics visible, to isolate the reported live-transcript regression.
 - App backgrounding, OS interruptions, Bluetooth routes, phone calls, and low-storage behavior.
 
 ## Known issues and limits
@@ -224,8 +232,8 @@ Remaining physical validation:
 
 ## Exact next steps
 
-1. On the connected Galaxy tablet, run one 10–15 second local session: grant microphone permission, record, place a bookmark, stop, and confirm the session appears in history.
-2. Close/reopen Recall with the token server unavailable. Confirm the same session remains, opens, plays/pauses/seeks offline, shows its transcript/bookmark, and reports a missing-file error gracefully if the audio is removed externally.
-3. Rename the session, close/reopen, delete it, close/reopen, and confirm deletion persists. This is the remaining Phase 1 physical validation; do not begin the next product milestone until it passes.
-4. If the Phase 0.6 benchmark is revisited later, keep Chirp 3 configuration and reconciliation D opt-in as previously documented. They are not part of normal Phase 1 session processing.
+1. Keep the existing physical test session unchanged. Force-stop/reopen Recall, confirm Home lists it, open it, and confirm its transcript, bookmark, duration, and playback controls remain.
+2. On `/record`, make one new 10–15 second voice recording with the DEV diagnostics visible. Watch for `token yes`, `socket open`, `setup ready`, `sent > 0`, server messages, and interim/final event counts while speaking.
+3. Stop the new recording and confirm it appears immediately with `Improving transcript…` or `Preparing transcript…`, then confirm the persisted transcript update arrives without navigation.
+4. With Metro still available for the dev client, stop only the token server and verify the existing and new saved sessions remain browsable and playable offline. Use the new session for rename/delete verification so the original physical test session is preserved.
 5. Keep real 8.5-minute rotation and iOS verification as later validation work; do not treat these as a new product milestone.
