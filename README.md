@@ -132,6 +132,46 @@ npx expo start --dev-client
 
 If native projects already exist and app config changes, rerun `npx expo prebuild` before rebuilding. The audio plugin adds the microphone permission and native configuration during prebuild.
 
+## Android emulator development
+
+The Windows development machine has a local AVD named `Recall_Test` using the stable Android 15/API 35 Google Play x86_64 image. The AVD is local machine state under the Android user profile and must not be committed.
+
+Set the SDK for each new PowerShell session, then launch the emulator with moderate resource use:
+
+```powershell
+$sdk = 'C:\Users\Mouhssine\AppData\Local\Android\Sdk'
+$env:ANDROID_HOME = $sdk
+$env:ANDROID_SDK_ROOT = $sdk
+$env:Path = "$sdk\platform-tools;$sdk\emulator;$sdk\cmdline-tools\latest\bin;$env:Path"
+& "$sdk\emulator\emulator.exe" -avd Recall_Test -no-snapshot -no-boot-anim -memory 2048 -gpu auto
+```
+
+Keep Metro on an IPv4/LAN-compatible binding. The local server is started separately from the project root using the local `.env`:
+
+```powershell
+npm run server
+npx expo start --dev-client --host lan --port 8081
+```
+
+With both the physical tablet and emulator connected, first list devices and then use the emulator serial explicitly for device operations. The current emulator normally appears as `emulator-5554`; use the serial actually returned by `adb devices -l`.
+
+```powershell
+& adb devices -l
+& adb -s <emulator-serial> reverse tcp:8081 tcp:8081
+& adb -s <emulator-serial> reverse tcp:8787 tcp:8787
+```
+
+For a new development-client install, run `npx expo run:android --device` and choose `Recall_Test` in Expo's device picker. If Metro is already running, use `--no-bundler`. Do not pass the physical tablet's serial by accident. After a force-stop, launch through Expo or select the saved Metro project in the development client. If the client has no selected project, this explicit reversed-localhost deep link reloads the existing bundle:
+
+```powershell
+& adb -s <emulator-serial> shell am force-stop com.mouhssineee.recall
+& adb -s <emulator-serial> shell am start -a android.intent.action.VIEW -d 'exp+recall://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081'
+```
+
+The emulator is suitable for autonomous checks of startup/relaunch, route navigation, SQLite repository persistence, session loading/error states, rename/delete behavior on emulator-only data, and offline playback with a known local WAV. It is also useful for inspecting logcat and screenshots. A host/emulator microphone can verify permission and native capture plumbing, but it is not equivalent to physical hardware for microphone quality, routing, live latency, or natural speech. Human multilingual/code-switched speech, real device audio paths, interruptions, Bluetooth/phone-call behavior, and final hardware validation still require the Galaxy tablet (or another physical device).
+
+No additional UI automation framework is installed at this stage. ADB, `uiautomator`, screenshots, and the existing Vitest/repository tests cover the current workflow with low setup cost. Maestro can be reconsidered when the navigation and product screens stabilize; it is not needed for this Phase 1 emulator sanity pass.
+
 ## Architecture
 
 ```text
