@@ -1,4 +1,4 @@
-# Recall — Phase 1
+# Recall — Phase 2
 
 Recall is a mobile-first multilingual memory and transcription prototype for worldwide lecture, meeting, interview, study, conversation, and brainstorming capture. Phase 0 validated continuous local recording and live transcription. Phase 0.5 added post-recording file transcription, Phase 0.6 added controlled backend comparisons, and Phase 0.7 added an optional language-agnostic, audio-grounded repair pass. Phase 1 turns the transient spike into persistent local sessions. Moroccan Darija remains a difficult stress-test benchmark, not Recall's target language.
 
@@ -16,11 +16,12 @@ Recall is a mobile-first multilingual memory and transcription prototype for wor
 - The same saved WAV can be compared across Gemini Transcribe, Cloud Speech-to-Text V2 Chirp 3 (`ar-MA`), Gemini 3.7 Flash audio understanding, the temporary Gemini 3.5 Flash-Lite comparison, and a separate audio-grounded repair of A without overwriting any output.
 - The repair layer is language-agnostic by default. Optional session language/locale hints are advisory and preserve code-switching rather than forcing a locale or script.
 - Recordings, bookmarks, and transcript layers persist in a versioned local SQLite database across app restarts.
+- After transcript processing, the preferred transcript can generate locally persisted structured intelligence: a concise summary, key points, explicit action items, and logical chapters.
 - Each saved WAV is copied into an app-owned `document/sessions/<session-id>/audio.wav` directory before the session is inserted into SQLite.
 - The home screen lists saved sessions offline. Session detail supports local playback, seeking, bookmarks, rename, and delete without Gemini or the token server.
 - Normal session processing runs only the product A → D2 path through `POST /process`; the Phase 0 benchmark matrix remains separate development tooling and is not shown in the normal UI.
 
-This is deliberately not the full Recall product. There is no login, cloud persistence, summarization, embeddings, search, cross-session Q&A, sharing, or settings system.
+This is deliberately not the full Recall product. There is no login, cloud persistence, embeddings, search, cross-session Q&A, sharing, subscriptions, payments, diarization, or settings system.
 
 ## Requirements
 
@@ -81,7 +82,7 @@ Verify it locally with:
 curl http://127.0.0.1:8787/health
 ```
 
-The expected response is `{"ok":true}`. `POST /token` mints a single-use ephemeral token constrained to the transcribe-live model and text transcription configuration. `POST /process` is the normal Phase 1 post-recording path for A → D2 processing. `POST /transcribe` remains the Phase 0.5 single-backend endpoint, and `POST /benchmark` accepts one raw WAV body for the Phase 0.6/0.7 comparison; all audio-processing endpoints are local-development-only and do not retain uploaded audio on the server.
+The expected response is `{"ok":true}`. `POST /token` mints a single-use ephemeral token constrained to the transcribe-live model and text transcription configuration. `POST /process` is the normal Phase 1 post-recording path for A → D2 processing, and `POST /intelligence` accepts the resolved preferred transcript for Phase 2 structured notes. `POST /transcribe` remains the Phase 0.5 single-backend endpoint, and `POST /benchmark` accepts one raw WAV body for the Phase 0.6/0.7 comparison; all audio-processing/intelligence endpoints are local-development-only and do not retain uploaded audio on the server.
 
 ### Optional Chirp 3 setup
 
@@ -210,6 +211,8 @@ The mobile app never receives or stores the long-lived Gemini API key. `GeminiTo
 
 The product session path is separate from live transcription. After capture stops, the app first copies the finalized WAV into its session directory and inserts the session plus bookmarks into SQLite. It then posts that durable WAV to `/process`. The server validates the WAV, uses one temporary Gemini File for A (`gemini-3.5-transcribe`) and D2 (`gemini-3.5-flash-lite` repair), deletes the remote File best-effort, and removes its local temporary directory in a `finally` block. The live, raw-final A, and repaired D2 transcript layers are persisted separately. Recall exposes a preferred transcript for downstream product use, currently preferring repaired D2, then A, then live finalized text. That is a replaceable default preference, not a ground-truth claim; the client does not receive the long-lived Gemini key or Cloud credentials.
 
+When a usable preferred transcript is available, the app asynchronously posts only that resolved transcript and optional session language context to `/intelligence`. The server uses `gemini-3.5-flash-lite` with structured JSON output for a concise summary, key points, explicit action items, and logical chapters. The result is stored locally in the one-to-one `session_intelligence` table and is independent of the audio/transcript save path. Intelligence generation is transcript-grounded, does not silently turn a transcript into polished prose, and can be replaced by another provider later. If the preferred transcript changes, the stored source fingerprint makes the intelligence stale; Recall does not regenerate automatically yet.
+
 The Phase 0.6/0.7 benchmark remains available through `POST /benchmark` and its client/service modules for controlled research runs. It is intentionally not part of the normal session history or product presentation.
 
 ## Project structure
@@ -227,6 +230,11 @@ The Phase 0.6/0.7 benchmark remains available through `POST /benchmark` and its 
 - `src/services/sessionProcessingClient.ts` — client for the narrow A → D2 `/process` endpoint.
 - `src/services/sessionSnapshot.ts` — ordered local-repository initialization and history snapshot loading.
 - `src/services/transcriptPreference.ts` — preferred transcript resolution and the downstream accessor for the replaceable D2 > A > live default.
+- `src/services/transcriptFingerprint.ts` — stable preferred-transcript fingerprinting for intelligence staleness checks.
+- `src/services/sessionIntelligenceClient.ts` — credential-free mobile client for the `/intelligence` boundary.
+- `src/services/sessionIntelligenceWorkflow.ts` — preferred-transcript-gated generation, persistence, retry isolation, and duplicate-run guard.
+- `src/services/sessionIntelligenceState.ts` — stale intelligence detection.
+- `src/types/intelligence.ts` — structured summary, key-point, action-item, and chapter types.
 - `src/types/session.ts` — persistent session, bookmark, status, and transcript-layer types.
 - `src/services/liveTranscriptionSessionManager.ts` — reconnect/rotation/session lifecycle.
 - `src/services/geminiLiveTranscription.ts` — constrained Gemini Live WebSocket adapter.
@@ -242,12 +250,13 @@ The Phase 0.6/0.7 benchmark remains available through `POST /benchmark` and its 
 - `src/services/bookmarkService.ts` — timestamped bookmark creation.
 - `src/types/` — transcript, bookmark, and stopped-recording types.
 - `src/design/tokens.ts` — small warm/editorial visual token layer.
-- `server/index.ts` — local Node/TypeScript token, session-processing, refinement, and benchmark server.
+- `server/index.ts` — local Node/TypeScript token, session-processing, intelligence, refinement, and benchmark server.
+- `server/sessionIntelligenceService.ts` — replaceable-provider boundary and Gemini structured-output adapter for Phase 2.
 - `server/transcriptionService.ts` — current @google/genai Files API and Interactions adapters for A and audio-grounded repair D2.
 - `server/chirp3TranscriptionService.ts` — optional Cloud Speech-to-Text V2 `Recognize` adapter for `chirp_3` + `ar-MA`.
 - `server/benchmarkService.ts` — independent A/B/C/C2/D2 orchestration and opt-in D reconciliation.
 - `server/wavValidation.ts` — bounded RIFF/WAVE PCM16 validation and metadata extraction.
-- `tests/` — hardware-independent logic, repository, transcript preference, and provider tests.
+- `tests/` — hardware-independent logic, repository, transcript preference, intelligence, and provider tests.
 
 ## Checks
 
@@ -268,6 +277,9 @@ These validate TypeScript, server TypeScript, pure session/transcript/bookmark/r
 - Reconnect buffering is intentionally bounded. Chunks dropped while Gemini is unavailable are not replayed; the local audio file continues to capture.
 - Transcript timestamps are receive-time/utterance-level approximations because live transcription events do not currently expose a complete word-level audio timeline in this adapter.
 - SQLite stores one local database with sessions and bookmarks; cloud sync and multi-device history are not implemented.
+- Phase 2 intelligence is stored locally alongside each session and currently uses `gemini-3.5-flash-lite` server-side. It consumes the centralized preferred transcript, keeps summary/key points/action items/chapters structured, and does not claim that the preferred layer is ground truth.
+- Intelligence generation is asynchronous and remains usable while the detail screen is open or the user navigates away, but it is not a background job: terminating the app process can interrupt an in-flight request. A failed generation leaves the saved audio, transcript layers, and session intact and can be retried.
+- The current preference order is repaired D2 > raw-final A > live finalized transcript. It is a replaceable downstream preference; a user-selected source and quality-based selection are future seams, not Phase 2 behavior.
 - Durable local audio and metadata are product-session scoped, while remote processing/upload history is intentionally not retained on the server.
 - Phase 0.6/0.7 benchmark results are current-session only and intentionally unscored. A/B/C/C2 outputs remain raw and separate; D2 is a separate repair of A, not a replacement for it. No script normalization, translation, prose cleanup, or automatic reference scoring is performed.
 - D2 uses a generic audio-grounded repair instruction with empty/unknown language context by default in the provider seam. The local benchmark server defaults to advisory hinted context only to evaluate the current difficult multilingual sample; set `RECALL_BENCHMARK_LANGUAGE_MODE=auto` for the no-hints comparison.

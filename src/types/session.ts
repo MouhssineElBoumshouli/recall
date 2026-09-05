@@ -1,4 +1,5 @@
 import type { Bookmark } from './bookmark';
+import type { SessionIntelligence } from './intelligence';
 import type { TranscriptLanguageContext } from './languageContext';
 
 export type RecordingStatus = 'complete' | 'failed';
@@ -33,6 +34,7 @@ export interface SessionBookmark extends Bookmark {
 export interface RecallSessionWithBookmarks {
   session: RecallSession;
   bookmarks: SessionBookmark[];
+  intelligence: SessionIntelligence;
 }
 
 export interface SessionTranscriptUpdate {

@@ -14,6 +14,11 @@ import {
   transcribeWavFile,
 } from './transcriptionService.js';
 import {
+  createGeminiSessionIntelligenceProvider,
+  SessionIntelligenceProviderError,
+  SESSION_INTELLIGENCE_MODEL,
+} from './sessionIntelligenceService.js';
+import {
   isWithinTranscriptionLimit,
   normalizeContentType,
   validateWavRequest,
@@ -36,13 +41,17 @@ const benchmarkLanguageContext: TranscriptLanguageContext = process.env.RECALL_B
       preserveCodeSwitching: true,
     };
 class RequestBodyTooLargeError extends Error {}
+const MAX_INTELLIGENCE_REQUEST_BYTES = 2_000_000;
 
 function sendJson(response: import('node:http').ServerResponse, status: number, body: unknown) {
   response.writeHead(status, { 'Content-Type': 'application/json' });
   response.end(JSON.stringify(body));
 }
 
-function readRequestBody(request: import('node:http').IncomingMessage): Promise<Buffer> {
+function readRequestBody(
+  request: import('node:http').IncomingMessage,
+  maxBytes = 50 * 1024 * 1024,
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
@@ -55,7 +64,7 @@ function readRequestBody(request: import('node:http').IncomingMessage): Promise<
 
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       totalBytes += buffer.length;
-      if (!isWithinTranscriptionLimit(totalBytes)) {
+      if (totalBytes > maxBytes || (maxBytes === 50 * 1024 * 1024 && !isWithinTranscriptionLimit(totalBytes))) {
         settled = true;
         reject(new RequestBodyTooLargeError('Audio exceeds the Phase 0.5 upload limit.'));
         return;
@@ -106,12 +115,43 @@ function parseCustomVocabulary(request: import('node:http').IncomingMessage): st
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseIntelligenceInput(value: unknown) {
+  if (!isRecord(value) || typeof value.preferredTranscript !== 'string' || !value.preferredTranscript.trim()) {
+    return null;
+  }
+
+  const languageContext = isRecord(value.languageContext) ? value.languageContext as TranscriptLanguageContext : null;
+  const metadata = isRecord(value.sessionMetadata) &&
+    typeof value.sessionMetadata.sessionId === 'string' &&
+    typeof value.sessionMetadata.title === 'string' &&
+    typeof value.sessionMetadata.recordedAt === 'string' &&
+    typeof value.sessionMetadata.durationMs === 'number'
+    ? {
+        sessionId: value.sessionMetadata.sessionId,
+        title: value.sessionMetadata.title,
+        recordedAt: value.sessionMetadata.recordedAt,
+        durationMs: value.sessionMetadata.durationMs,
+      }
+    : undefined;
+
+  return {
+    preferredTranscript: value.preferredTranscript,
+    languageContext,
+    ...(metadata ? { sessionMetadata: metadata } : {}),
+  };
+}
+
 if (!apiKey) {
   console.error('GEMINI_API_KEY is required to start the token server.');
   process.exitCode = 1;
 } else {
   const ai = new GoogleGenAI({ apiKey });
   const transcriptionGateway = createGeminiTranscriptionGateway(ai);
+  const intelligenceProvider = createGeminiSessionIntelligenceProvider(ai);
   const chirp3Gateway = cloudProjectId
     ? createChirp3TranscriptionGateway({ projectId: cloudProjectId, location: cloudLocation })
     : null;
@@ -263,6 +303,50 @@ if (!apiKey) {
       } finally {
         if (temporaryDirectory) {
           await rm(temporaryDirectory, { recursive: true, force: true });
+        }
+      }
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/intelligence') {
+      const rawContentType = request.headers['content-type'];
+      const contentTypeHeader = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+      const contentType = normalizeContentType(contentTypeHeader);
+      if (!contentType || !contentType.startsWith('application/json')) {
+        sendJson(response, 415, { code: 'UNSUPPORTED_REQUEST', error: 'Session intelligence requires a JSON request.' });
+        return;
+      }
+
+      try {
+        const body = await readRequestBody(request, MAX_INTELLIGENCE_REQUEST_BYTES);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(body.toString('utf8'));
+        } catch {
+          sendJson(response, 400, { code: 'INVALID_REQUEST', error: 'Session intelligence request is invalid.' });
+          return;
+        }
+
+        const input = parseIntelligenceInput(parsed);
+        if (!input) {
+          sendJson(response, 400, { code: 'NO_PREFERRED_TRANSCRIPT', error: 'A preferred transcript is required.' });
+          return;
+        }
+
+        const intelligence = await intelligenceProvider.generate(input);
+        sendJson(response, 200, { ok: true, intelligence });
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) {
+          sendJson(response, 413, { code: 'INTELLIGENCE_REQUEST_TOO_LARGE', error: 'The transcript is too large to process.' });
+        } else if (error instanceof SessionIntelligenceProviderError) {
+          console.error('[intelligence] provider failure', {
+            model: SESSION_INTELLIGENCE_MODEL,
+            code: error.code,
+          });
+          sendJson(response, 502, { code: error.code, error: error.message });
+        } else {
+          console.error('[intelligence] unexpected generation failure');
+          sendJson(response, 502, { code: 'INTELLIGENCE_FAILED', error: 'Unable to generate session intelligence.' });
         }
       }
       return;

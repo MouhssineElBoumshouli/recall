@@ -20,4 +20,11 @@ describe('session detail audio lifecycle contract', () => {
     expect(sessionDetailSource).toContain(".then(() => router.replace('/'))");
     expect(sessionDetailSource).not.toContain('deleteSession(id).then(() => player.pause());');
   });
+
+  it('renders the intelligence processing, failure, and empty-transcript states', () => {
+    expect(sessionDetailSource).toContain('Generating notes…');
+    expect(sessionDetailSource).toContain('Notes could not be generated.');
+    expect(sessionDetailSource).toContain('Not enough transcript to generate notes.');
+    expect(sessionDetailSource).toContain('generateIntelligence(id)');
+  });
 });

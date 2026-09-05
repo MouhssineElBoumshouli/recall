@@ -6,6 +6,11 @@ import type {
   SessionBookmark,
   SessionTranscriptUpdate,
 } from '@/types/session';
+import {
+  createEmptySessionIntelligence,
+  type SessionIntelligence,
+  type SessionIntelligenceUpdate,
+} from '@/types/intelligence';
 import { buildTranscriptUpdate } from '@/services/transcriptPreference';
 
 export type SqliteValue = SQLiteBindValue;
@@ -18,7 +23,7 @@ export interface SessionDatabase {
   withTransactionAsync(task: () => Promise<void>): Promise<void>;
 }
 
-export const SESSION_DATABASE_VERSION = 2;
+export const SESSION_DATABASE_VERSION = 3;
 
 export const SESSION_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -49,6 +54,20 @@ CREATE TABLE IF NOT EXISTS bookmarks (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_session_id ON bookmarks(session_id);
+CREATE TABLE IF NOT EXISTS session_intelligence (
+  session_id TEXT PRIMARY KEY NOT NULL,
+  status TEXT NOT NULL DEFAULT 'not-started',
+  generated_at TEXT,
+  source_transcript_fingerprint TEXT,
+  source_transcript_source TEXT NOT NULL DEFAULT 'none',
+  summary TEXT NOT NULL DEFAULT '',
+  key_points TEXT NOT NULL DEFAULT '[]',
+  action_items TEXT NOT NULL DEFAULT '[]',
+  chapters TEXT NOT NULL DEFAULT '[]',
+  processing_error TEXT,
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_session_intelligence_status ON session_intelligence(status);
 `;
 
 export const SESSION_SCHEMA_V1_TO_V2_SQL = `
@@ -56,6 +75,25 @@ ALTER TABLE sessions RENAME COLUMN authoritative_transcript TO preferred_transcr
 ALTER TABLE sessions RENAME COLUMN authoritative_source TO preferred_source;
 ALTER TABLE sessions ADD COLUMN preferred_source_override TEXT;
 PRAGMA user_version = 2;
+`;
+
+export const SESSION_SCHEMA_V2_TO_V3_SQL = `
+CREATE TABLE IF NOT EXISTS session_intelligence (
+  session_id TEXT PRIMARY KEY NOT NULL,
+  status TEXT NOT NULL DEFAULT 'not-started',
+  generated_at TEXT,
+  source_transcript_fingerprint TEXT,
+  source_transcript_source TEXT NOT NULL DEFAULT 'none',
+  summary TEXT NOT NULL DEFAULT '',
+  key_points TEXT NOT NULL DEFAULT '[]',
+  action_items TEXT NOT NULL DEFAULT '[]',
+  chapters TEXT NOT NULL DEFAULT '[]',
+  processing_error TEXT,
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+INSERT OR IGNORE INTO session_intelligence (session_id) SELECT id FROM sessions;
+CREATE INDEX IF NOT EXISTS idx_session_intelligence_status ON session_intelligence(status);
+PRAGMA user_version = 3;
 `;
 
 interface SessionRow {
@@ -83,6 +121,19 @@ interface BookmarkRow {
   session_id: string;
   timestamp_ms: number;
   created_at: string;
+}
+
+interface SessionIntelligenceRow {
+  session_id: string;
+  status: SessionIntelligence['status'];
+  generated_at: string | null;
+  source_transcript_fingerprint: string | null;
+  source_transcript_source: SessionIntelligence['sourceTranscriptSource'];
+  summary: string;
+  key_points: string;
+  action_items: string;
+  chapters: string;
+  processing_error: string | null;
 }
 
 function parseLanguageContext(value: string | null): RecallSession['languageContext'] {
@@ -129,6 +180,85 @@ function mapBookmark(row: BookmarkRow): SessionBookmark {
   };
 }
 
+function parseStringArray(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseActionItems(value: string): SessionIntelligence['actionItems'] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((item): item is SessionIntelligence['actionItems'][number] => {
+      if (!item || typeof item !== 'object') {
+        return false;
+      }
+      const candidate = item as Record<string, unknown>;
+      return typeof candidate.id === 'string' && typeof candidate.text === 'string' &&
+        (typeof candidate.owner === 'string' || candidate.owner === null) &&
+        (typeof candidate.dueDate === 'string' || candidate.dueDate === null);
+    });
+  } catch {
+    return [];
+  }
+}
+
+function parseChapters(value: string): SessionIntelligence['chapters'] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((item): item is SessionIntelligence['chapters'][number] => {
+      if (!item || typeof item !== 'object') {
+        return false;
+      }
+      const candidate = item as Record<string, unknown>;
+      return typeof candidate.id === 'string' && typeof candidate.title === 'string' &&
+        typeof candidate.summary === 'string' &&
+        (typeof candidate.startTimestampMs === 'number' || candidate.startTimestampMs === null);
+    });
+  } catch {
+    return [];
+  }
+}
+
+function mapIntelligence(row: SessionIntelligenceRow): SessionIntelligence {
+  return {
+    sessionId: row.session_id,
+    status: row.status,
+    generatedAt: row.generated_at,
+    sourceTranscriptFingerprint: row.source_transcript_fingerprint,
+    sourceTranscriptSource: row.source_transcript_source,
+    summary: row.summary,
+    keyPoints: parseStringArray(row.key_points),
+    actionItems: parseActionItems(row.action_items),
+    chapters: parseChapters(row.chapters),
+    processingError: row.processing_error,
+  };
+}
+
+function intelligenceParams(intelligence: SessionIntelligence): SqliteValue[] {
+  return [
+    intelligence.sessionId,
+    intelligence.status,
+    intelligence.generatedAt,
+    intelligence.sourceTranscriptFingerprint,
+    intelligence.sourceTranscriptSource,
+    intelligence.summary,
+    JSON.stringify(intelligence.keyPoints),
+    JSON.stringify(intelligence.actionItems),
+    JSON.stringify(intelligence.chapters),
+    intelligence.processingError,
+  ];
+}
+
 export async function initializeSessionSchema(database: SessionDatabase): Promise<void> {
   await database.execAsync('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
   const versionRow = await database.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
@@ -147,12 +277,18 @@ export async function initializeSessionSchema(database: SessionDatabase): Promis
   if (version < 2) {
     await database.execAsync(SESSION_SCHEMA_V1_TO_V2_SQL);
   }
+
+  if (version < 3) {
+    await database.execAsync(SESSION_SCHEMA_V2_TO_V3_SQL);
+  }
 }
 
 export interface SessionRepository {
   initialize(): Promise<void>;
   listSessions(): Promise<RecallSession[]>;
   getSession(id: string): Promise<RecallSessionWithBookmarks | null>;
+  getIntelligence(id: string): Promise<SessionIntelligence>;
+  updateIntelligence(id: string, update: SessionIntelligenceUpdate): Promise<void>;
   createSession(session: RecallSession, bookmarks: SessionBookmark[]): Promise<void>;
   updateSession(id: string, update: SessionTranscriptUpdate): Promise<void>;
   renameSession(id: string, title: string): Promise<void>;
@@ -167,6 +303,14 @@ export function createSessionRepository(database: SessionDatabase): SessionRepos
       await initializeSessionSchema(database);
       initialized = true;
     }
+  }
+
+  async function readIntelligence(id: string): Promise<SessionIntelligence> {
+    const row = await database.getFirstAsync<SessionIntelligenceRow>(
+      'SELECT * FROM session_intelligence WHERE session_id = ?',
+      [id],
+    );
+    return row ? mapIntelligence(row) : createEmptySessionIntelligence(id);
   }
 
   return {
@@ -194,7 +338,51 @@ export function createSessionRepository(database: SessionDatabase): SessionRepos
         'SELECT * FROM bookmarks WHERE session_id = ? ORDER BY timestamp_ms ASC',
         [id],
       );
-      return { session: mapSession(row), bookmarks: bookmarkRows.map(mapBookmark) };
+      return {
+        session: mapSession(row),
+        bookmarks: bookmarkRows.map(mapBookmark),
+        intelligence: await readIntelligence(id),
+      };
+    },
+
+    async getIntelligence(id) {
+      await initialize();
+      return readIntelligence(id);
+    },
+
+    async updateIntelligence(id, update) {
+      await initialize();
+      const sessionRow = await database.getFirstAsync<SessionRow>(
+        'SELECT * FROM sessions WHERE id = ?',
+        [id],
+      );
+      if (!sessionRow) {
+        throw new Error('Recall session was not found.');
+      }
+
+      const current = await readIntelligence(id);
+      const next: SessionIntelligence = {
+        ...current,
+        ...update,
+        sessionId: id,
+      };
+      await database.runAsync(
+        `INSERT INTO session_intelligence (
+          session_id, status, generated_at, source_transcript_fingerprint, source_transcript_source,
+          summary, key_points, action_items, chapters, processing_error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+          status = excluded.status,
+          generated_at = excluded.generated_at,
+          source_transcript_fingerprint = excluded.source_transcript_fingerprint,
+          source_transcript_source = excluded.source_transcript_source,
+          summary = excluded.summary,
+          key_points = excluded.key_points,
+          action_items = excluded.action_items,
+          chapters = excluded.chapters,
+          processing_error = excluded.processing_error`,
+        intelligenceParams(next),
+      );
     },
 
     async createSession(session, bookmarks) {
@@ -234,6 +422,14 @@ export function createSessionRepository(database: SessionDatabase): SessionRepos
             [bookmark.id, bookmark.sessionId, bookmark.elapsedTimestampMs, bookmark.createdAt],
           );
         }
+
+        await database.runAsync(
+          `INSERT INTO session_intelligence (
+            session_id, status, generated_at, source_transcript_fingerprint, source_transcript_source,
+            summary, key_points, action_items, chapters, processing_error
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          intelligenceParams(createEmptySessionIntelligence(session.id)),
+        );
       });
     },
 

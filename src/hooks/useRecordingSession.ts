@@ -114,7 +114,7 @@ export function useRecordingSession({ onSessionCreated }: UseRecordingSessionOpt
     startRecording: startNativeRecording,
     stopRecording: stopNativeRecording,
   } = useAudioRecorder();
-  const { createSession, updateSession } = useSessions();
+  const { createSession, updateSession, generateIntelligence } = useSessions();
   const [phase, setPhase] = useState<RecordingPhase>('idle');
   const [elapsedMs, setElapsedMs] = useState(0);
   const [connectionState, setConnectionState] = useState('idle');
@@ -261,6 +261,11 @@ export function useRecordingSession({ onSessionCreated }: UseRecordingSessionOpt
           transcriptStatus: hasUsableTranscript ? 'succeeded' : 'failed',
           processingError: result.error,
         });
+        void generateIntelligence(sessionId).catch((intelligenceError) => {
+          if (__DEV__) {
+            console.error('[Recall] intelligence generation could not be persisted:', intelligenceError instanceof Error ? intelligenceError.message : 'unknown error');
+          }
+        });
       } catch (processingError) {
         if (attempt !== processingAttemptRef.current) {
           return;
@@ -272,10 +277,15 @@ export function useRecordingSession({ onSessionCreated }: UseRecordingSessionOpt
             transcriptStatus: liveTranscript.trim() ? 'succeeded' : 'failed',
             processingError: message,
           }).catch(() => undefined);
+          void generateIntelligence(sessionId).catch((intelligenceError) => {
+            if (__DEV__) {
+              console.error('[Recall] intelligence generation could not be persisted:', intelligenceError instanceof Error ? intelligenceError.message : 'unknown error');
+            }
+          });
         }
       }
     },
-    [processingClient, updateSession],
+    [generateIntelligence, processingClient, updateSession],
   );
 
   const start = useCallback(async () => {

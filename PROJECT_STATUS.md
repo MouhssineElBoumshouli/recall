@@ -1,6 +1,6 @@
-# Recall — Phase 1 project status
+# Recall — Phase 2 project status
 
-Status date: 2026-09-04
+Status date: 2026-09-05
 
 ## Completed work
 
@@ -43,6 +43,11 @@ Status date: 2026-09-04
 - Added a narrow `/process` server boundary for normal A → D2 processing. The existing `/benchmark` A/B/C/C2/D2/D tooling remains separate and is no longer triggered by ordinary recordings.
 - Added home history, `/record`, and `/session/[id]` routes. Session detail provides offline WAV playback, timeline seeking, bookmark seeking, rename, delete confirmation, and missing-audio errors.
 - Added `expo-sqlite`, `expo-file-system`, `expo-audio`, and the required `expo-asset` peer dependency. The Android development client was regenerated and rebuilt for these native modules.
+- Added Phase 2 session intelligence. It consumes the centralized preferred-transcript accessor and generates a structured summary, key points, action items, and topical chapters through a replaceable provider boundary.
+- Added server-side `/intelligence` using `gemini-3.5-flash-lite` structured JSON output. The mobile app sends transcript text and optional language context only; the long-lived Gemini key remains server-side.
+- Added the versioned `session_intelligence` SQLite table and v2 → v3 migration. Existing sessions receive an empty `not-started` intelligence record and are not deleted or rewritten.
+- Added asynchronous generation after transcript processing, persisted success/failure states, safe retry behavior, duplicate-run protection, and transcript-fingerprint staleness detection. Intelligence failure never removes or invalidates saved audio, transcript layers, or session metadata.
+- Extended session detail with normal product sections for Summary, Key Points, Action Items, and Chapters, plus concise processing/failure/empty states. Provider/model diagnostics remain development-only.
 
 ## Current architecture
 
@@ -58,7 +63,7 @@ src/app/index.tsx (home/history)
         │                              │       └── reconnect/rotation/live transcript
         │                              └── sessionAudioStorage → SessionProvider → SQLite
         │
-        └── /session/[id] → local SQLite session + expo-audio player
+        └── /session/[id] → local SQLite session + expo-audio player + persisted intelligence
 
 useRecordingSession
         ├── useAudioRecorder (single local recorder)
@@ -89,6 +94,29 @@ finalize native WAV
 ```
 
 The mobile app is responsible for recording state, the elapsed timer, UI state, and the one audio source. The manager is responsible for Gemini connection lifecycle only. The token server is intentionally a replaceable boundary: a future deployed service can preserve the mobile `/token` contract without moving the Gemini API key into the app.
+
+After the preferred transcript is resolved:
+
+```text
+preferred transcript accessor
+        └── asynchronous SessionIntelligenceClient → server/index.ts /intelligence
+                ├── language context is advisory and optional
+                ├── gemini-3.5-flash-lite structured JSON provider
+                ├── summary, key points, explicit action items, topical chapters
+                ├── local session_intelligence persistence
+                └── fingerprint retained for stale-result detection
+```
+
+Phase 2 intelligence is a product layer rather than a new ASR layer. It uses only the transcript returned by the centralized preferred-transcript contract. The current default preference is repaired D2, then raw-final A, then live finalized text; this is a replaceable preference, not a claim that the selected text is ground truth. All transcript layers remain preserved independently.
+
+## Phase 2 decisions
+
+- The provider boundary is `SessionIntelligenceProvider`; the current Gemini adapter is isolated in `server/sessionIntelligenceService.ts` so a later provider can replace it without changing session UI or storage contracts.
+- The provider returns structured product concepts, not a Gemini response object: summary, key points, action items with nullable owner/due date, and chapters with nullable timestamps.
+- The prompt is language-agnostic. Unknown language context defaults to automatic multilingual preservation; optional language and locale hints are advisory and never authorize invented content.
+- Generation is grounded only in the preferred transcript. It must not invent facts, decisions, names, dates, tasks, or commitments; it must not translate, summarize the transcript in place, or turn it into edited prose.
+- A one-to-one `session_intelligence` row is created with each session. Migration v2 → v3 inserts empty rows for existing sessions, and `ON DELETE CASCADE` removes only the target row with its session.
+- Intelligence is not required for recording success. A failed request stores a safe failure state, leaves audio/transcript layers intact, and can be retried against the current preferred transcript. A source fingerprint marks a successful result stale if that preference later changes; automatic regeneration is not enabled.
 
 Phase 0.6/0.7 benchmark execution uses one request and one shared Gemini upload:
 
@@ -124,7 +152,7 @@ Recall's intended product direction is worldwide multilingual capture and memory
 16. Transcript repair is a replaceable provider seam, not a prose-editing layer. Its generic prompt treats audio as authoritative, preserves code-switching, prohibits translation/summarization/paraphrase, and treats language/locale context as advisory.
 17. Reconciliation is disabled by default and is only attempted when explicitly enabled after A, B, and C have all independently succeeded. C2 and D2 are separate comparison results and do not silently replace C or A. No automatic script normalization, translation, scoring, or reference correction is performed.
 18. Phase 1 creates the local session record only after the native WAV is finalized and copied into an app-owned session directory. Remote processing is never required for recording success.
-19. SQLite schema versioning currently uses `user_version = 2`; the v1-to-v2 migration renames the transcript projection columns and adds a nullable preferred-source override. The database is never recreated on launch.
+19. SQLite schema versioning currently uses `user_version = 3`; the v1-to-v2 migration renames the transcript projection columns and adds a nullable preferred-source override, and the v2-to-v3 migration adds the one-to-one `session_intelligence` table. The database is never recreated on launch.
 20. The normal post-recording path uses `/process` for A followed by D2. The experimental benchmark matrix remains available but is not part of normal session history or presentation.
 21. The preferred transcript is selected explicitly as repaired D2 > raw A > live finalized capture. Lower-level transcript layers remain persisted for comparison; this default preference does not claim that D2 is always more accurate.
 22. `PreferredTranscriptSource` and the centralized `resolvePreferredTranscript` / `getPreferredTranscript` seam keep downstream features independent from transcript-layer selection. A nullable source override is persisted for a future user choice without exposing source selection in the current UI.
@@ -160,6 +188,7 @@ Passed in the current workspace:
 - Phase 1 live regression — the physical report observed no live words, but the failing recording did not preserve the new connection milestones, so a provider/audio/UI root cause cannot yet be proven from that run. The hook still uses the validated single recorder → PCM callback → manager path; a DEV-only diagnostic panel and safe Metro diagnostics are now available for the next short voice recording.
 - Phase 1 processing UX — detail now distinguishes `Improving transcript…` when live text exists from `Preparing transcript…` when only the saved audio is available. Persisted session updates refresh the open detail route automatically.
 - Phase 1.1 static result — `npm run typecheck`, `npm run server:check`, `npm run lint`, `npm test`, and `git diff --check` passed. Vitest reports 18 files and 96 tests, including preferred-transcript resolution, override fallback, layer preservation, schema migration, and repository reload coverage. `npx expo-doctor` remains the existing 16/18 result described above.
+- Phase 2 validation status — structured intelligence, local persistence, `/intelligence`, preferred-transcript gating, retry isolation, and stale-result detection are implemented. The final workspace checks passed: `npm run typecheck`, `npm run server:check`, `npm run lint`, `npm test` (22 files, 111 tests), and `git diff --check`. `npx expo-doctor` remains 16/18 because of the existing Prebuild/native-folder warning and the existing Expo SDK 57 patch-version mismatches; no Expo upgrade was made. No physical Phase 2 recording has been performed by the coding session.
 - Phase 1 static result after stabilization — `npm run typecheck`, `npm run server:check`, `npm run lint`, and `npm test` passed with 17 test files and 90 tests. New tests cover repository startup snapshot success/failure; existing tests cover schema versioning, saved-session reload, processing-failure preservation, and transcript fallback.
 - Android emulator setup — the existing SDK tooling was reused; no Android Studio or SDK reinstall was needed. `Recall_Test` was created from the installed stable Android 15/API 35 Google Play x86_64 image. The host has approximately 15.3 GB RAM and 137 GB free disk, and the emulator reported WHPX acceleration with system, GPU, and disk checks passing.
 - Android emulator build/runtime — the x86_64 debug development client built successfully and installed only to `emulator-5554`; the physical tablet remained connected as `R52X904PCEH` and was not reset or modified. Metro was served with `--dev-client --host lan`, and emulator-only ADB reverse mappings were configured for ports 8081 and 8787.
@@ -233,6 +262,8 @@ Remaining physical validation:
 - The fallback timestamp is based on when a Gemini event is received, not word-level audio timing.
 - During a connection outage, only a small bounded number of chunks are held for replay. A prolonged outage may produce gaps in the live transcript while the source recording remains intact.
 - Phase 1 now has local session persistence, offline playback, and durable transcript layers; transcript export and cloud sync remain out of scope.
+- Phase 2 notes are local and offline-readable after generation. Current generation uses `gemini-3.5-flash-lite` through the server, and in-flight generation may be interrupted if the app process is terminated because background execution is not implemented.
+- The preferred transcript remains a selection for downstream product use. D2 is not treated as guaranteed truth; future confidence, comparison, or user-selection policies can replace the default without changing intelligence consumers.
 - The current UI is intentionally functional and editorial, not the final Recall navigation or accessibility pass.
 - Phase 0.5 refinement has now been benchmarked on one physical natural Darija/French/English sample, with meaningful but insufficient Darija improvement. Results remain current-session only.
 - Phase 0.6/0.7 benchmark results are current-session only; A/B/C/C2 remain raw independent outputs, D2 is a separate repair of A, and D is opt-in experimental only.
@@ -246,5 +277,6 @@ Remaining physical validation:
 1. Keep the existing physical test session unchanged. Force-stop/reopen Recall, confirm Home lists it, open it, and confirm its transcript, bookmark, duration, and playback controls remain.
 2. On `/record`, make one new 10–15 second voice recording with the DEV diagnostics visible. Watch for `token yes`, `socket open`, `setup ready`, `sent > 0`, server messages, and interim/final event counts while speaking.
 3. Stop the new recording and confirm it appears immediately with `Improving transcript…` or `Preparing transcript…`, then confirm the persisted transcript update arrives without navigation.
-4. With Metro still available for the dev client, stop only the token server and verify the existing and new saved sessions remain browsable and playable offline. Use the new session for rename/delete verification so the original physical test session is preserved.
-5. Keep real 8.5-minute rotation and iOS verification as later validation work; do not treat these as a new product milestone.
+4. On a disposable 30–60 second tablet session, speak one clear topic with 3–5 factual points, one explicit action item, and two topic changes. Confirm Summary, Key Points, Action Items, and Chapters appear without invented tasks or facts.
+5. Force-stop/reopen the app with the server unavailable. Confirm the same session, transcript, intelligence, bookmarks, and playback remain available offline; do not expect an in-flight request to resume after process termination.
+6. Keep real 8.5-minute rotation and iOS verification as later validation work; do not treat these as a new product milestone.

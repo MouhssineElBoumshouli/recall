@@ -2,9 +2,12 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { colors, displayFont, layout, radii, spacing, typography } from '@/design/tokens';
+import { tokenServerUrl } from '@/config';
 import { deleteSessionAudio } from '@/services/sessionAudioStorage';
 import { getSessionRepository } from '@/services/sqliteSessionRepository';
 import { loadSessionSnapshot } from '@/services/sessionSnapshot';
+import { SessionIntelligenceClient } from '@/services/sessionIntelligenceClient';
+import { createSessionIntelligenceRunGate, runSessionIntelligence } from '@/services/sessionIntelligenceWorkflow';
 import type { SessionRepository } from '@/services/sessionRepository';
 import type {
   RecallSession,
@@ -19,6 +22,7 @@ interface SessionContextValue {
   error: string | null;
   refresh: () => Promise<void>;
   getSession: (id: string) => Promise<RecallSessionWithBookmarks | null>;
+  generateIntelligence: (id: string) => Promise<void>;
   createSession: (session: RecallSession, bookmarks: SessionBookmark[]) => Promise<void>;
   updateSession: (id: string, update: SessionTranscriptUpdate) => Promise<void>;
   renameSession: (id: string, title: string) => Promise<void>;
@@ -67,6 +71,8 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const repositoryRef = useRef<SessionRepository | null>(null);
   const initializationRef = useRef<Promise<SessionRepository> | null>(null);
+  const intelligenceRunGateRef = useRef(createSessionIntelligenceRunGate());
+  const [intelligenceClient] = useState(() => new SessionIntelligenceClient(tokenServerUrl));
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -131,6 +137,16 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     return nextRepository.getSession(id);
   }, [getReadyRepository]);
 
+  const generateIntelligence = useCallback(async (id: string) => {
+    await intelligenceRunGateRef.current.run(id, async () => {
+      const nextRepository = await getReadyRepository();
+      await runSessionIntelligence(id, nextRepository, intelligenceClient);
+      if (mountedRef.current) {
+        setSessions(await nextRepository.listSessions());
+      }
+    });
+  }, [getReadyRepository, intelligenceClient]);
+
   const createSession = useCallback(async (session: RecallSession, bookmarks: SessionBookmark[]) => {
     const nextRepository = await getReadyRepository();
     await nextRepository.createSession(session, bookmarks);
@@ -176,6 +192,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     error,
     refresh,
     getSession,
+    generateIntelligence,
     createSession,
     updateSession,
     renameSession,
@@ -186,6 +203,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     error,
     refresh,
     getSession,
+    generateIntelligence,
     createSession,
     updateSession,
     renameSession,

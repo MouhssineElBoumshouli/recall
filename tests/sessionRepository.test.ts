@@ -8,6 +8,7 @@ import {
   type SqliteValue,
 } from '@/services/sessionRepository';
 import type { RecallSession } from '@/types/session';
+import type { SessionIntelligence } from '@/types/intelligence';
 
 interface StoredSessionRow {
   id: string;
@@ -36,12 +37,26 @@ interface StoredBookmarkRow {
   created_at: string;
 }
 
+interface StoredIntelligenceRow {
+  session_id: string;
+  status: SessionIntelligence['status'];
+  generated_at: string | null;
+  source_transcript_fingerprint: string | null;
+  source_transcript_source: SessionIntelligence['sourceTranscriptSource'];
+  summary: string;
+  key_points: string;
+  action_items: string;
+  chapters: string;
+  processing_error: string | null;
+}
+
 class FakeDatabase implements SessionDatabase {
   version: number;
   schemaExecutions = 0;
   migrationSql = '';
   sessions = new Map<string, StoredSessionRow>();
   bookmarks: StoredBookmarkRow[] = [];
+  intelligence = new Map<string, StoredIntelligenceRow>();
 
   constructor(version = 0) {
     this.version = version;
@@ -53,6 +68,9 @@ class FakeDatabase implements SessionDatabase {
     }
     if (source.includes('PRAGMA user_version = 2')) {
       this.version = 2;
+    }
+    if (source.includes('PRAGMA user_version = 3')) {
+      this.version = 3;
     }
     if (source.includes('ALTER TABLE sessions RENAME COLUMN')) {
       this.migrationSql = source;
@@ -69,6 +87,20 @@ class FakeDatabase implements SessionDatabase {
         raw_final_transcript: rawFinal as string | null, repaired_transcript: repaired as string | null,
         preferred_transcript: String(preferred), preferred_source: preferredSource as RecallSession['preferredTranscriptSource'], preferred_source_override: preferredSourceOverride as RecallSession['preferredTranscriptSourceOverride'],
         language_context: languageContext as string | null, processing_error: processingError as string | null,
+      });
+    } else if (source.includes('INSERT INTO session_intelligence')) {
+      const [sessionId, status, generatedAt, fingerprint, sourceName, summary, keyPoints, actionItems, chapters, processingError] = params;
+      this.intelligence.set(String(sessionId), {
+        session_id: String(sessionId),
+        status: status as SessionIntelligence['status'],
+        generated_at: generatedAt as string | null,
+        source_transcript_fingerprint: fingerprint as string | null,
+        source_transcript_source: sourceName as SessionIntelligence['sourceTranscriptSource'],
+        summary: String(summary),
+        key_points: String(keyPoints),
+        action_items: String(actionItems),
+        chapters: String(chapters),
+        processing_error: processingError as string | null,
       });
     } else if (source.includes('INSERT INTO bookmarks')) {
       const [id, sessionId, timestampMs, createdAt] = params;
@@ -100,6 +132,7 @@ class FakeDatabase implements SessionDatabase {
       const [id] = params;
       this.sessions.delete(String(id));
       this.bookmarks = this.bookmarks.filter((bookmark) => bookmark.session_id !== String(id));
+      this.intelligence.delete(String(id));
     }
     return {};
   }
@@ -107,6 +140,9 @@ class FakeDatabase implements SessionDatabase {
   async getFirstAsync<T>(source: string, params: SqliteValue[] = []): Promise<T | null> {
     if (source.includes('PRAGMA user_version')) {
       return { user_version: this.version } as T;
+    }
+    if (source.includes('FROM session_intelligence')) {
+      return (this.intelligence.get(String(params[0])) || null) as T | null;
     }
     const row = this.sessions.get(String(params[0]));
     return (row || null) as T | null;
@@ -170,14 +206,37 @@ describe('persistent session repository', () => {
     await initializeSessionSchema(database);
     await repository.initialize();
     expect(database.schemaExecutions).toBe(1);
+    expect(database.version).toBe(3);
 
     await repository.createSession(older.session, older.bookmarks);
     await repository.createSession(newer.session, newer.bookmarks);
     expect((await repository.listSessions()).map((item) => item.id)).toEqual(['newer', 'older']);
     expect((await repository.getSession('newer'))?.bookmarks).toHaveLength(1);
+    expect((await repository.getSession('newer'))?.intelligence).toMatchObject({
+      sessionId: 'newer',
+      status: 'not-started',
+      sourceTranscriptSource: 'none',
+    });
+
+    await repository.updateIntelligence('newer', {
+      status: 'succeeded',
+      generatedAt: '2026-09-04T10:01:00.000Z',
+      sourceTranscriptFingerprint: 'fnv1a-test',
+      sourceTranscriptSource: 'live-finalized',
+      summary: 'Saved summary.',
+      keyPoints: ['Saved point.'],
+      actionItems: [],
+      chapters: [],
+    });
 
     const restartedRepository = createSessionRepository(database);
     expect((await restartedRepository.listSessions()).map((item) => item.id)).toEqual(['newer', 'older']);
+    expect((await restartedRepository.getSession('newer'))?.intelligence).toMatchObject({
+      status: 'succeeded',
+      generatedAt: '2026-09-04T10:01:00.000Z',
+      summary: 'Saved summary.',
+      keyPoints: ['Saved point.'],
+    });
   });
 
   it('migrates the v1 transcript projection names without changing saved semantics', async () => {
@@ -192,7 +251,7 @@ describe('persistent session repository', () => {
     const repository = createSessionRepository(database);
     await repository.initialize();
 
-    expect(database.version).toBe(2);
+    expect(database.version).toBe(3);
     expect(database.migrationSql).toContain('authoritative_transcript TO preferred_transcript');
     expect(database.migrationSql).toContain('authoritative_source TO preferred_source');
     expect((await repository.getSession('legacy'))?.session).toMatchObject({
@@ -238,6 +297,7 @@ describe('persistent session repository', () => {
 
     await repository.deleteSession('first');
     expect(await repository.getSession('first')).toBeNull();
+    expect(database.intelligence.has('first')).toBe(false);
     expect((await repository.getSession('second'))?.bookmarks).toHaveLength(1);
   });
 

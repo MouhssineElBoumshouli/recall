@@ -5,8 +5,10 @@ import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-au
 
 import { colors, displayFont, layout, radii, spacing, typography } from '@/design/tokens';
 import { isAudioFileAvailable } from '@/services/sessionAudioStorage';
+import { isSessionIntelligenceStale } from '@/services/sessionIntelligenceState';
 import { getPreferredTranscript } from '@/services/transcriptPreference';
 import { useSessions } from '@/providers/SessionProvider';
+import type { SessionIntelligence } from '@/types/intelligence';
 import type { RecallSessionWithBookmarks } from '@/types/session';
 import { formatElapsedMs } from '@/utils/time';
 
@@ -34,11 +36,86 @@ function StatusText({ session }: { session: RecallSessionWithBookmarks }) {
   return <Text style={styles.statusText}>Transcript saved locally</Text>;
 }
 
+function IntelligenceSection({
+  intelligence,
+  transcriptStatus,
+  retrying,
+  stale,
+  onRetry,
+}: {
+  intelligence: SessionIntelligence;
+  transcriptStatus: RecallSessionWithBookmarks['session']['transcriptStatus'];
+  retrying: boolean;
+  stale: boolean;
+  onRetry: () => void;
+}) {
+  const isProcessing = retrying || intelligence.status === 'processing';
+
+  return (
+    <View>
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionLabel}>SESSION INTELLIGENCE</Text>
+      </View>
+
+      {isProcessing && <Text style={styles.statusText}>Generating notes…</Text>}
+      {!isProcessing && intelligence.status === 'failed' && (
+        <View style={styles.intelligenceMessage}>
+          <Text style={styles.errorText}>Notes could not be generated.</Text>
+          <ActionButton label="Retry" onPress={onRetry} />
+        </View>
+      )}
+      {!isProcessing && intelligence.status === 'not-started' && (
+        <Text style={styles.helperText}>
+          {transcriptStatus === 'processing' ? 'Notes will be available when the transcript is ready.' : 'Not enough transcript to generate notes.'}
+        </Text>
+      )}
+      {!isProcessing && intelligence.status === 'succeeded' && (
+        <>
+          {stale && <Text style={styles.helperText}>These notes reflect an earlier transcript version.</Text>}
+          <View style={styles.intelligenceBlock}>
+            <Text style={styles.subsectionLabel}>SUMMARY</Text>
+            <Text style={styles.intelligenceText}>{intelligence.summary || 'No summary generated.'}</Text>
+          </View>
+
+          <View style={styles.intelligenceBlock}>
+            <Text style={styles.subsectionLabel}>KEY POINTS</Text>
+            {intelligence.keyPoints.length > 0 ? intelligence.keyPoints.map((point, index) => (
+              <Text key={`${point}-${index}`} style={styles.listItem}>• {point}</Text>
+            )) : <Text style={styles.helperText}>No key points identified.</Text>}
+          </View>
+
+          <View style={styles.intelligenceBlock}>
+            <Text style={styles.subsectionLabel}>ACTION ITEMS</Text>
+            {intelligence.actionItems.length > 0 ? intelligence.actionItems.map((item) => (
+              <View key={item.id} style={styles.listItemBlock}>
+                <Text style={styles.listItem}>• {item.text}</Text>
+                {(item.owner || item.dueDate) && (
+                  <Text style={styles.listMeta}>{[item.owner, item.dueDate].filter(Boolean).join(' · ')}</Text>
+                )}
+              </View>
+            )) : <Text style={styles.helperText}>No action items identified.</Text>}
+          </View>
+
+          <View style={styles.intelligenceBlock}>
+            <Text style={styles.subsectionLabel}>CHAPTERS</Text>
+            {intelligence.chapters.length > 0 ? intelligence.chapters.map((chapter) => (
+              <View key={chapter.id} style={styles.chapterBlock}>
+                <Text style={styles.chapterTitle}>{chapter.startTimestampMs === null ? chapter.title : `${formatElapsedMs(chapter.startTimestampMs)} · ${chapter.title}`}</Text>
+                <Text style={styles.intelligenceText}>{chapter.summary}</Text>
+              </View>
+            )) : <Text style={styles.helperText}>No chapters identified.</Text>}
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
 export default function SessionDetailScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ id?: string }>();
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
-  const { sessions, getSession, renameSession, deleteSession } = useSessions();
+  const { sessions, getSession, generateIntelligence, renameSession, deleteSession } = useSessions();
   const [detail, setDetail] = useState<RecallSessionWithBookmarks | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -46,6 +123,7 @@ export default function SessionDetailScreen() {
   const [titleDraft, setTitleDraft] = useState('');
   const [savingTitle, setSavingTitle] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [retryingIntelligence, setRetryingIntelligence] = useState(false);
   const [timelineWidth, setTimelineWidth] = useState(0);
   // Expo Audio's SDK 57 API accepts null as an empty source. Keep the player
   // explicitly unloaded until the repository has returned a valid session.
@@ -117,6 +195,20 @@ export default function SessionDetailScreen() {
     }
   };
 
+  const handleRetryIntelligence = async () => {
+    if (!id || retryingIntelligence) {
+      return;
+    }
+    setRetryingIntelligence(true);
+    try {
+      await generateIntelligence(id);
+    } catch (intelligenceError) {
+      setError(intelligenceError instanceof Error ? intelligenceError.message : 'Unable to generate session intelligence.');
+    } finally {
+      setRetryingIntelligence(false);
+    }
+  };
+
   const confirmDelete = () => {
     if (!id || deleting) {
       return;
@@ -161,6 +253,7 @@ export default function SessionDetailScreen() {
 
   const { session, bookmarks } = detail;
   const transcript = getPreferredTranscript(session).text;
+  const intelligenceStale = isSessionIntelligenceStale(session, detail.intelligence);
 
   return (
     <ScrollView contentContainerStyle={styles.screenContent}>
@@ -244,7 +337,7 @@ export default function SessionDetailScreen() {
 
       <View style={styles.sectionHeader}>
         <Text style={styles.sectionLabel}>BOOKMARKS</Text>
-        <Text style={styles.sourceLabel}>{bookmarks.length}</Text>
+        <Text style={styles.countLabel}>{bookmarks.length}</Text>
       </View>
       <View style={styles.bookmarksBlock}>
         {bookmarks.length === 0 && <Text style={styles.helperText}>No bookmarks in this session.</Text>}
@@ -267,6 +360,14 @@ export default function SessionDetailScreen() {
           </Pressable>
         ))}
       </View>
+
+      <IntelligenceSection
+        intelligence={detail.intelligence}
+        transcriptStatus={session.transcriptStatus}
+        retrying={retryingIntelligence}
+        stale={intelligenceStale}
+        onRetry={() => void handleRetryIntelligence()}
+      />
 
       {error && <Text style={styles.errorText}>{error}</Text>}
       <ActionButton label={deleting ? 'Deleting…' : 'Delete session'} onPress={confirmDelete} danger />
@@ -299,10 +400,19 @@ const styles = StyleSheet.create({
   timelineProgress: { height: 16, borderRadius: 8, backgroundColor: colors.accent },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: spacing.xxl, paddingBottom: spacing.md },
   sectionLabel: { color: colors.faintInk, fontSize: typography.eyebrow, fontWeight: '800', letterSpacing: 1.4 },
-  sourceLabel: { color: colors.mutedInk, fontSize: typography.caption },
+  countLabel: { color: colors.mutedInk, fontSize: typography.caption },
   transcriptBlock: { paddingVertical: spacing.lg },
   transcriptText: { color: colors.ink, fontSize: typography.bodyLarge, lineHeight: 30 },
   helperText: { color: colors.mutedInk, fontSize: typography.body, lineHeight: 24, textAlign: 'center' },
+  intelligenceMessage: { gap: spacing.md, alignItems: 'flex-start' },
+  intelligenceBlock: { gap: spacing.sm, paddingVertical: spacing.md },
+  subsectionLabel: { color: colors.faintInk, fontSize: typography.eyebrow, fontWeight: '800', letterSpacing: 1.2 },
+  intelligenceText: { color: colors.ink, fontSize: typography.body, lineHeight: 25 },
+  listItem: { color: colors.ink, fontSize: typography.body, lineHeight: 25 },
+  listItemBlock: { gap: spacing.xs },
+  listMeta: { color: colors.mutedInk, fontSize: typography.caption, paddingLeft: spacing.md },
+  chapterBlock: { gap: spacing.xs, paddingVertical: spacing.sm, borderTopWidth: 1, borderColor: colors.line },
+  chapterTitle: { color: colors.ink, fontSize: typography.body, fontWeight: '700' },
   bookmarksBlock: { borderTopWidth: 1, borderColor: colors.line },
   bookmarkRow: { minHeight: 56, flexDirection: 'row', alignItems: 'center', gap: spacing.md, borderBottomWidth: 1, borderColor: colors.line },
   bookmarkTime: { color: colors.accent, fontSize: typography.body, fontWeight: '700', fontVariant: ['tabular-nums'] },

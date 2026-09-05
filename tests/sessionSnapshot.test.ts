@@ -8,6 +8,8 @@ function repository(overrides: Partial<SessionRepository> = {}): SessionReposito
     initialize: vi.fn().mockResolvedValue(undefined),
     listSessions: vi.fn().mockResolvedValue([]),
     getSession: vi.fn().mockResolvedValue(null),
+    getIntelligence: vi.fn().mockResolvedValue({}),
+    updateIntelligence: vi.fn().mockResolvedValue(undefined),
     createSession: vi.fn().mockResolvedValue(undefined),
     updateSession: vi.fn().mockResolvedValue(undefined),
     renameSession: vi.fn().mockResolvedValue(undefined),
